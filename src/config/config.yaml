@@ -1,0 +1,29 @@
+data:
+  task_name: benign
+  split: val
+  train_fraction: 0.5
+  shuffle_seed: 0
+  behavior_ids: []
+  detailed_behaviors: true
+  hint_included: false
+  n_irrelevant_tools: 0
+
+models:
+  lm_name: openai/gpt-4.1-nano # change to 5 later after updating
+  lm_temperature: 1.0
+  max_tokens: 20000
+  refusal_judge_model: openai/gpt-4.1-nano
+  semantic_judge_model: openai/gpt-4.1-nano
+  api_base: 
+  # api_base: https://run.v36.cm/v1/
+  # headers:
+    # x-foo: "true"
+
+optimization:
+  optim_seed: 6793115
+  auto_mode: light
+  num_threads: 4
+
+experiment:
+  name: agentharm_experiment
+  uri: http://127.0.0.1:5000

@@ -1,0 +1,27 @@
+data:
+  task_name: benign
+  split: val
+  train_fraction: 0.1  # Use only 10% for training
+  shuffle_seed: 0
+  behavior_ids: []  # Keep empty to use all, or specify 1-2 IDs for minimal testing
+  detailed_behaviors: true
+  hint_included: false
+  n_irrelevant_tools: 0
+
+models:
+  lm_name: openai/gpt-4.1-nano
+  lm_temperature: 1.0  # Deterministic for testing
+  refusal_judge_model: openai/gpt-4.1-nano
+  semantic_judge_model: openai/gpt-4.1-nano
+  api_base: https://run.v36.cm/v1/
+  headers:
+    x-foo: "true"
+
+optimization:
+  optim_seed: 6793115
+  auto_mode: light  # Minimal optimization
+  num_threads: 1  # Reduce parallelism to control costs
+
+experiment:
+  name: test_agentharm_experiment
+  uri: http://127.0.0.1:5000
