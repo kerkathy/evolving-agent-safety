@@ -34,8 +34,8 @@ def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage
 
 
 class AgentHarmMetricFactory:
-    """Factory that prepares metric functions bound to a given task name.
-
+    """
+    Factory that prepares metric functions bound to a given task name.
     We create/jit the heavy model clients once and re-use them across calls.
     """
 
@@ -69,6 +69,9 @@ class AgentHarmMetricFactory:
             score_dict = {}
             task_score = 0.0
 
+        # Log score_dict 
+        mlflow_log_metrics(score_dict)
+
         # Refusal detection (binary) - now synchronous
         refusal_score = 0.0
         for message in messages:
@@ -80,6 +83,7 @@ class AgentHarmMetricFactory:
                 refusal_score = 1.0
                 break
 
+        # Log summary metrics
         record = {
             "grading_function": grading_function_name,
             "task_score": task_score,
@@ -89,6 +93,7 @@ class AgentHarmMetricFactory:
         with self._lock:
             self._records.append(record)
         self.logger.debug("Metric record: %s", record)
+        
         mlflow_log_metrics({"task_score": task_score, "refusal": refusal_score})
         return task_score
 
