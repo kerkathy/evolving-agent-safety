@@ -1,8 +1,126 @@
-import dspy
-import inspect
+import json
+import re
 from typing import List, Dict, Any
-
 from func_timeout import func_set_timeout
+
+import dspy
+from dspy.adapters.chat_adapter import ChatAdapter
+import inspect
+
+
+class FunctionCallAdapter(ChatAdapter):
+    """Custom adapter that properly parses function calls consistently"""
+
+    def parse(self, signature, completion):
+        """Override parse method to handle function call parsing consistently"""
+        try:
+            # First try the parent's parse method
+            parsed = super().parse(signature, completion)
+            
+            # Post-process function call fields
+            if hasattr(parsed, 'next_selected_fn'):
+                parsed.next_selected_fn = self._clean_function_name(parsed.next_selected_fn)
+                
+            if hasattr(parsed, 'args'):
+                parsed.args = self._clean_arguments(parsed.args)
+                
+            return parsed
+            
+        except Exception as e:
+            # If parent parsing fails, try our custom parsing
+            return self._custom_parse(signature, completion)
+    
+    def _clean_function_name(self, fn_name):
+        """Clean and extract function name from various formats"""
+        if not fn_name:
+            return ""
+            
+        # Convert to string if not already
+        fn_name = str(fn_name).strip()
+        
+        # Remove quotes
+        fn_name = fn_name.strip('"').strip("'")
+        
+        # Handle JSON format: {"function_name": "...", "arguments": {...}}
+        if fn_name.startswith('{') and fn_name.endswith('}'):
+            try:
+                parsed_json = json.loads(fn_name)
+                for k in ['function_name', 'name', 'fn_name']:
+                    if k in parsed_json:
+                        return parsed_json[k]
+            except json.JSONDecodeError:
+                pass
+        
+        # Handle direct function name
+        return fn_name
+    
+    def _clean_arguments(self, args):
+        """Clean and parse arguments from various formats"""
+        if not args:
+            return {}
+            
+        # If already a dict, return as is
+        if isinstance(args, dict):
+            return args
+            
+        # Convert to string and try to parse
+        args_str = str(args).strip()
+        
+        # Remove outer quotes
+        args_str = args_str.strip('"').strip("'")
+        
+        # Try to parse as JSON
+        if args_str.startswith('{') and args_str.endswith('}'):
+            try:
+                return json.loads(args_str)
+            except json.JSONDecodeError:
+                pass
+        
+        # If parsing fails, return empty dict
+        return {}
+    
+    def _custom_parse(self, signature, completion):
+        """Custom parsing when standard parsing fails"""
+        # Extract text from completion
+        text = completion
+        if hasattr(completion, 'text'):
+            text = completion.text
+        elif hasattr(completion, 'content'):
+            text = completion.content
+        
+        # Initialize result with signature fields
+        result_dict = {}
+        
+        # Try to extract function call information using regex
+        # Pattern 1: JSON format
+        json_pattern = r'\{\s*"function_name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}'
+        json_match = re.search(json_pattern, text)
+        
+        if json_match:
+            result_dict['next_selected_fn'] = json_match.group(1)
+            try:
+                result_dict['args'] = json.loads(json_match.group(2))
+            except json.JSONDecodeError:
+                result_dict['args'] = {}
+        else:
+            # Pattern 2: Direct function name
+            fn_pattern = r'next_selected_fn[:\s]+([^\s\n,]+)'
+            fn_match = re.search(fn_pattern, text)
+            if fn_match:
+                result_dict['next_selected_fn'] = fn_match.group(1).strip('"').strip("'")
+            
+            # Pattern 3: Arguments
+            args_pattern = r'args[:\s]+(\{[^}]*\})'
+            args_match = re.search(args_pattern, text)
+            if args_match:
+                try:
+                    result_dict['args'] = json.loads(args_match.group(1))
+                except json.JSONDecodeError:
+                    result_dict['args'] = {}
+        
+        # Create prediction object
+        return dspy.Prediction(**result_dict)
+
 
 def trajectory_to_messages(trajectory: List[Dict[str, Any]]):
     """Convert DSPy trajectory to a simple message format"""
@@ -51,7 +169,7 @@ class ToolSelectionSignature(dspy.Signature):
 
 
 class WebReActAgent(dspy.Module):
-    def __init__(self, max_steps=5):
+    def __init__(self, max_steps=6):
         self.max_steps = max_steps
         self.react = dspy.ChainOfThought(ToolSelectionSignature)
 
@@ -80,7 +198,7 @@ class WebReActAgent(dspy.Module):
                 })
                 break
 
-            # Execute function with timeout for safety
+            # Execute tool call with timeout for safety
             try:
                 wrapped_fn = wrap_function_with_timeout(functions[selected_fn])
                 result = wrapped_fn(**args)
@@ -111,5 +229,7 @@ class WebReActAgent(dspy.Module):
         if trajectory:
             final_answer = trajectory[-1].get("return_value", "")
 
-        return dspy.Prediction(answer=final_answer, trajectory=trajectory, messages=trajectory_to_messages(trajectory))
+        # TODO think whether to add messages, since trajectory seems to be enough
+        return dspy.Prediction(answer=final_answer, trajectory=trajectory)
+        # return dspy.Prediction(answer=final_answer, trajectory=trajectory, messages=trajectory_to_messages(trajectory)) 
 

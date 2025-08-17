@@ -44,11 +44,11 @@ def mlflow_setup(
 
     return True
 
-def mlflow_log_metrics(metrics: dict, step: Optional[int] = None) -> None:
+def mlflow_log_metrics(metrics: dict, step: Optional[int] = None, run_id: Optional[str] = None) -> None:
     # Filter serializable metrics
     numeric = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
     if numeric:
-        mlflow.log_metrics(numeric, step=step)
+        mlflow.log_metrics(numeric, step=step, run_id=run_id)
 
 def get_git_commit_hash(short: bool = True) -> str:
     cmd = ["git", "rev-parse", "HEAD"]

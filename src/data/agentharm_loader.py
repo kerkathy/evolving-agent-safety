@@ -133,7 +133,6 @@ def split_examples(
     rnd.shuffle(shuffled)
     total = len(shuffled)
     train_size = int(train_fraction * total)
-    val_size = total - train_size
     train = shuffled[:train_size]
     dev = shuffled[train_size:]
     return train, dev

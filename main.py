@@ -17,7 +17,7 @@ import mlflow
 from src.config import load_config, Config
 from src.data import load_agentharm_data, build_dspy_examples, split_examples
 from src.metrics import AgentHarmMetricFactory
-from src.agent import WebReActAgent
+from src.agent import WebReActAgent, FunctionCallAdapter
 from src.utils.logging_setup import setup_logging, mlflow_setup
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 
@@ -43,8 +43,11 @@ experiment_name = f"{config.experiment.name}_{config.data.task_name}"
 mlflow_setup(config.experiment.uri, experiment_name)
 
 # Language model setup with enhanced timeout and retry handling
-enhanced_lm = create_enhanced_dspy_lm(config.models, api_key)
-dspy.configure(lm=enhanced_lm)
+# Custom adapter for better output parsing
+dspy.configure(
+    lm=create_enhanced_dspy_lm(config.models, api_key), 
+    adapter=FunctionCallAdapter()
+)
 
 # %%
 def prepare_data():
@@ -72,8 +75,10 @@ def prepare_data():
 
 # %%
 def main():
+    # %%
     trainset, devset = prepare_data()
 
+    # %%
     logger.info("Compiling baseline agent...")
     agent = WebReActAgent()
     
@@ -97,20 +102,26 @@ def main():
     )
     params = config.as_flat_dict()
 
+    # %%
     # Log config params once
     safe_params = {k: v for k, v in params.items() if isinstance(v, (int, float, str, bool))}
     mlflow.log_params(safe_params)
 
     # Log source snapshot
-    if os.path.exists("src"):
-        mlflow.log_artifacts("src", artifact_path="source_code")
-    if os.path.exists("main.py"):
-        mlflow.log_artifact("main.py", artifact_path="source_code")
+    if os.path.exists("./src"):
+        mlflow.log_artifacts("./src", artifact_path="source_code")
+    if os.path.exists(__file__):
+        mlflow.log_artifact(__file__, artifact_path="source_code")
 
+    # %%
     # ---- Baseline Eval ----
     logger.info("Evaluating baseline agent...")
     evaluate(agent)
+    metric_factory.log_detailed_results("baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("baseline", reset=True)
+
+    # %%
+    # ---- Optimization ----
     logger.info("Optimizing agent...")
     optimizer = dspy.MIPROv2(
         metric=metric_fn,
@@ -122,20 +133,24 @@ def main():
     )
     optimized_agent = optimizer.compile(
         agent, trainset=trainset, seed=config.optimization.optim_seed
-    )        
+    )
+    metric_factory.log_detailed_results("optimization_detailed_results", reset=False)
+    metric_factory.summarize_and_log("optimization", reset=True)
 
     mlflow.dspy.log_model(
         optimized_agent,
         name="dspy_model",
     )
-    
+
+    # %%
     # ---- Optimized Eval ----
     metric_factory.reset()
     logger.info("Evaluating optimized agent...")
     evaluate(optimized_agent, metric=metric_fn)
+    metric_factory.log_detailed_results("final_detailed_results", reset=False)
     metric_factory.summarize_and_log("optimized", reset=True)
 
-    logger.info("Run complete: parent_run_id=%s", run.info.run_id)
+    logger.info("Run complete")
 
 
 if __name__ == "__main__":

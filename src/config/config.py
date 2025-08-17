@@ -17,7 +17,7 @@ from typing import Literal, Sequence
 
 @dataclass(slots=True)
 class AgentHarmDataConfig:
-    task_name: Literal["harmful", "benign", "chat"] = "benign"
+    task_name: Literal["harmful", "benign", "chat"] = "harmful"
     split: Literal["val", "test_private", "test_public"] = "val"
     behavior_ids: Sequence[str] | None = None
     detailed_behaviors: bool | None = True
