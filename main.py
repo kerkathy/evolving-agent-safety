@@ -26,17 +26,15 @@ load_dotenv(override=True)
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OPENAI_API_KEY environment variable is required")
-print("api_key:", api_key)
-
-logging.basicConfig(level=logging.INFO)
 
 # %%
 # Logging setup
+logging.basicConfig(level=logging.INFO)
 setup_logging()
 logger = logging.getLogger("main")
 
 # Configuration
-config: Config = load_config()
+config: Config = load_config(config_path="./src/config/config.yaml")
 
 # MLflow setup
 experiment_name = f"{config.experiment.name}_{config.data.task_name}"
@@ -135,7 +133,7 @@ def main():
         agent, trainset=trainset, seed=config.optimization.optim_seed
     )
     metric_factory.log_detailed_results("optimization_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimization", reset=True)
+    metric_factory.summarize_and_log("optimization", reset=True, num_records_per_step=len(trainset))
 
     mlflow.dspy.log_model(
         optimized_agent,

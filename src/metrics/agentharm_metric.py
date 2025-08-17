@@ -7,15 +7,14 @@ from __future__ import annotations
 
 import os, json, tempfile
 from typing import Any, Dict, List
+import logging
+import threading
 
 import numpy as np
 from inspect_ai.model import ChatMessage, ChatMessageAssistant, get_model
 import mlflow
 
 from external.inspect_evals.src.inspect_evals.agentharm.scorer import RefusalJudgeLLM
-from external.inspect_evals.src.inspect_evals.agentharm.benchmark import harmful_grading_functions, benign_grading_functions
-import logging
-import threading
 from src.utils.logging_setup import mlflow_log_metrics
 from src.utils.sync_wrappers import asyncio_run_wrapper, get_sync_grading_function
 
@@ -75,9 +74,6 @@ class AgentHarmMetricFactory:
             score_dict = {}
             task_score = 0.0
 
-        # Log score_dict 
-        # mlflow_log_metrics(score_dict) # TODO
-
         # Refusal detection (binary) - now synchronous
         refusal_score = 0.0
         for message in messages:
@@ -102,18 +98,16 @@ class AgentHarmMetricFactory:
             self._records.append(record)
         self.logger.debug("Metric record: %s", record)
         
-        # mlflow_log_metrics({"task_score": task_score, "refusal": refusal_score})
         return task_score
 
     def metric(self, example, pred, trace=None) -> float:
         """Synchronous metric for use with DSPy."""
         return float(self._score_sync(example, pred, trace))
 
-    def _calc_and_log_summary(self, records, label, step=None):
+    def _calc_and_log_summary(self, phase, records, step=None):
         task_scores = [r["task_score"] for r in records]
         refusals = [r["refusal"] for r in records]
         summary = {
-            "label": label,
             "n": len(records),
             "task_score_mean": float(np.mean(task_scores)),
             "task_score_std": float(np.std(task_scores)) if len(task_scores) > 1 else 0.0,
@@ -122,17 +116,17 @@ class AgentHarmMetricFactory:
         }
         mlflow_log_metrics(
             {
-                f"{label}_task_score_mean": summary["task_score_mean"],
-                f"{label}_task_score_std": summary["task_score_std"],
-                f"{label}_refusal_rate": summary["refusal_rate"],
-                f"{label}_refusal_std": summary["refusal_std"],
+                f"{phase}_task_score_mean": summary["task_score_mean"],
+                f"{phase}_task_score_std": summary["task_score_std"],
+                f"{phase}_refusal_rate": summary["refusal_rate"],
+                f"{phase}_refusal_std": summary["refusal_std"],
             },
             run_id=self._current_run_id,
             step=step
         )
         self.logger.info(
             "Summary [%s]: n=%d task_score=%.4f±%.4f refusal_rate=%.3f±%.4f",
-            label,
+            phase,
             summary["n"],
             summary["task_score_mean"],
             summary["task_score_std"],
@@ -141,7 +135,7 @@ class AgentHarmMetricFactory:
         )
         return summary
 
-    def summarize_and_log(self, label: str, reset: bool = False, num_records_per_step: int = -1) -> dict:
+    def summarize_and_log(self, phase, reset: bool = False, num_records_per_step: int = -1) -> dict:
         with self._lock:
             if not self._records:
                 return {}
@@ -152,11 +146,10 @@ class AgentHarmMetricFactory:
                     start = step_idx * num_records_per_step
                     end = start + num_records_per_step
                     step_records = self._records[start:end]
-                    step_label = f"{label}_step{step_idx+1}"
-                    summary = self._calc_and_log_summary(step_records, step_label, step=step_idx)
-                    summaries[step_label] = summary
+                    summary = self._calc_and_log_summary(phase, step_records, step=step_idx)
+                    summaries[step_idx] = summary
             else:
-                summary = self._calc_and_log_summary(self._records, label)
+                summary = self._calc_and_log_summary(phase, self._records)
 
             if reset:
                 self._records.clear()

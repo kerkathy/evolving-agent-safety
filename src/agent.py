@@ -1,17 +1,97 @@
 import json
 import re
+import logging
 from typing import List, Dict, Any
 from func_timeout import func_set_timeout
 
 import dspy
 from dspy.adapters.chat_adapter import ChatAdapter
-import inspect
+from dspy.signatures.signature import Signature
+from dspy.clients.lm import LM
 
+# logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+import inspect
 
 class FunctionCallAdapter(ChatAdapter):
     """Custom adapter that properly parses function calls consistently"""
 
+    def __call__(
+        self,
+        lm: LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        logger.debug("Entered FunctionCallAdapter.__call__")
+        # print("Entered FunctionCallAdapter.__call__")
+        # Get results from parent
+        results = super().__call__(lm, lm_kwargs, signature, demos, inputs)
+        
+        # Post-process each result to clean function fields
+        cleaned_results = []
+        for result in results:
+            cleaned_result = self._post_process_result_dict(result)
+            cleaned_results.append(cleaned_result)
+            
+        return cleaned_results
+
+    async def acall(
+        self,
+        lm: LM,
+        lm_kwargs: dict[str, Any],
+        signature: type[Signature],
+        demos: list[dict[str, Any]],
+        inputs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        logger.debug("Entered FunctionCallAdapter.acall")
+        # print("Entered FunctionCallAdapter.acall")
+        # Get results from parent
+        results = await super().acall(lm, lm_kwargs, signature, demos, inputs)
+        
+        # Post-process each result to clean function fields
+        cleaned_results = []
+        for result in results:
+            cleaned_result = self._post_process_result_dict(result)
+            cleaned_results.append(cleaned_result)
+            
+        return cleaned_results
+    
+    def _post_process_result_dict(self, result_dict):
+        logger.debug("Entered FunctionCallAdapter._post_process_result_dict")
+        # print("Entered FunctionCallAdapter._post_process_result_dict")
+        """Post-process a result dictionary to clean function fields"""
+        if not isinstance(result_dict, dict):
+            return result_dict
+        
+        cleaned_dict = result_dict.copy()
+        
+        # Clean all function-related fields
+        function_fields = ['next_selected_fn', 'selected_fn', 'function_name', 'fn_name', 'function']
+        for field in function_fields:
+            if field in cleaned_dict:
+                original_value = cleaned_dict[field]
+                cleaned_value = self._clean_function_name(original_value)
+                cleaned_dict[field] = cleaned_value
+                logger.debug(f"Cleaned {field}: {repr(original_value)} -> {repr(cleaned_value)}")
+                # print(f"Cleaned {field}: {repr(original_value)} -> {repr(cleaned_value)}")
+
+        # Clean arguments
+        args_fields = ['args', 'arguments', 'function_args']
+        for field in args_fields:
+            if field in cleaned_dict:
+                original_args = cleaned_dict[field]
+                cleaned_args = self._clean_arguments(original_args)
+                cleaned_dict[field] = cleaned_args
+                
+        return cleaned_dict
+
     def parse(self, signature, completion):
+        logger.debug("Entered FunctionCallAdapter.parse")
+        # print("Entered FunctionCallAdapter.parse")
+        logger.debug("[FunctionCallAdapter] Parsing completion: %s", completion)
+        # print(f"[FunctionCallAdapter] Parsing completion: {completion}")
         """Override parse method to handle function call parsing consistently"""
         try:
             # First try the parent's parse method
@@ -20,17 +100,20 @@ class FunctionCallAdapter(ChatAdapter):
             # Post-process function call fields
             if hasattr(parsed, 'next_selected_fn'):
                 parsed.next_selected_fn = self._clean_function_name(parsed.next_selected_fn)
-                
+
             if hasattr(parsed, 'args'):
                 parsed.args = self._clean_arguments(parsed.args)
-                
             return parsed
             
         except Exception as e:
             # If parent parsing fails, try our custom parsing
+            logger.warning("Parent parse failed, using custom parse: %s", e)
+            # print(f"Parent parse failed, using custom parse: {e}")
             return self._custom_parse(signature, completion)
     
     def _clean_function_name(self, fn_name):
+        logger.debug("Entered FunctionCallAdapter._clean_function_name")
+        # print("Entered FunctionCallAdapter._clean_function_name")
         """Clean and extract function name from various formats"""
         if not fn_name:
             return ""
@@ -38,9 +121,9 @@ class FunctionCallAdapter(ChatAdapter):
         # Convert to string if not already
         fn_name = str(fn_name).strip()
         
-        # Remove quotes
-        fn_name = fn_name.strip('"').strip("'")
-        
+        # replace \" with "
+        fn_name = fn_name.replace('\"', '"')
+
         # Handle JSON format: {"function_name": "...", "arguments": {...}}
         if fn_name.startswith('{') and fn_name.endswith('}'):
             try:
@@ -50,11 +133,15 @@ class FunctionCallAdapter(ChatAdapter):
                         return parsed_json[k]
             except json.JSONDecodeError:
                 pass
+
+        fn_name = fn_name.strip('"').strip("'")
         
         # Handle direct function name
         return fn_name
     
     def _clean_arguments(self, args):
+        logger.debug("Entered FunctionCallAdapter._clean_arguments")
+        # print("Entered FunctionCallAdapter._clean_function_name")
         """Clean and parse arguments from various formats"""
         if not args:
             return {}
@@ -78,8 +165,10 @@ class FunctionCallAdapter(ChatAdapter):
         
         # If parsing fails, return empty dict
         return {}
-    
+
     def _custom_parse(self, signature, completion):
+        logger.debug("Entered FunctionCallAdapter._custom_parse")
+        # print("Entered FunctionCallAdapter._custom_parse")
         """Custom parsing when standard parsing fails"""
         # Extract text from completion
         text = completion
@@ -120,29 +209,11 @@ class FunctionCallAdapter(ChatAdapter):
         
         # Create prediction object
         return dspy.Prediction(**result_dict)
-
-
-def trajectory_to_messages(trajectory: List[Dict[str, Any]]):
-    """Convert DSPy trajectory to a simple message format"""
-    messages = []
-    for step in trajectory:
-        # Add reasoning and function call info
-        if "selected_fn" in step and "args" in step:
-            content = f"I'll call {step['selected_fn']} with arguments: {step['args']}"
-            if "reasoning" in step:
-                content = f"{step['reasoning']}\n\n{content}"
-            messages.append({"role": "assistant", "content": content})
-        
-        # Add tool response 
-        if "return_value" in step:
-            return_value = step["return_value"]
-            if return_value:
-                messages.append({"role": "assistant", "content": str(return_value)})
     
-    return messages
-
 
 def wrap_function_with_timeout(fn):
+    logger.debug("Entered wrap_function_with_timeout")
+    # print("Entered wrap_function_with_timeout")
     @func_set_timeout(10)
     def wrapper(*args, **kwargs):
         try:
@@ -153,6 +224,8 @@ def wrap_function_with_timeout(fn):
     return wrapper
 
 def fn_metadata(func):
+    logger.debug("Entered fn_metadata")
+    # print("Entered fn_metadata")
     signature = inspect.signature(func)
     docstring = inspect.getdoc(func) or "No docstring."
     return dict(function_name=func.__name__, arguments=str(signature), docstring=docstring)
@@ -170,10 +243,14 @@ class ToolSelectionSignature(dspy.Signature):
 
 class WebReActAgent(dspy.Module):
     def __init__(self, max_steps=6):
+        logger.debug("Entered WebReActAgent.__init__")
+        # print("Entered WebReActAgent.__init__")
         self.max_steps = max_steps
         self.react = dspy.ChainOfThought(ToolSelectionSignature)
 
     def forward(self, question, functions):
+        logger.debug("Entered WebReActAgent.forward")
+        # print("Entered WebReActAgent.forward")
         # Convert functions dict to metadata format for tool selection
         tools = {fn_name: fn_metadata(fn) for fn_name, fn in functions.items()}
         trajectory = []
@@ -183,41 +260,41 @@ class WebReActAgent(dspy.Module):
             pred = self.react(question=question, trajectory=trajectory, functions=tools)
             
             # Extract prediction values safely
-            selected_fn = str(getattr(pred, "next_selected_fn", "")).strip('"').strip("'")
+            next_selected_fn = str(getattr(pred, "next_selected_fn", "")).strip('"').strip("'")
             args = getattr(pred, "args", {})
             reasoning = getattr(pred, "reasoning", None)
 
             # Safety check: ensure function exists
-            if selected_fn not in functions:
+            if next_selected_fn not in functions:
                 trajectory.append({
                     "reasoning": reasoning,
-                    "selected_fn": selected_fn,
+                    "next_selected_fn": next_selected_fn,
                     "args": args,
                     "return_value": "Error: Function not found",
-                    "errors": f"Function '{selected_fn}' not available"
+                    "errors": f"Function '{next_selected_fn}' not available"
                 })
                 break
 
             # Execute tool call with timeout for safety
             try:
-                wrapped_fn = wrap_function_with_timeout(functions[selected_fn])
+                wrapped_fn = wrap_function_with_timeout(functions[next_selected_fn])
                 result = wrapped_fn(**args)
                 
                 trajectory.append(dict(
                     reasoning=reasoning,
-                    selected_fn=selected_fn,
+                    next_selected_fn=next_selected_fn,
                     args=args,
                     return_value=result,
                     errors=None
                 ))
 
-                if selected_fn == "finish":
+                if next_selected_fn == "finish":
                     break
 
             except Exception as e:
                 trajectory.append({
                     "reasoning": reasoning,
-                    "selected_fn": selected_fn,
+                    "next_selected_fn": next_selected_fn,
                     "args": args,
                     "return_value": None,
                     "errors": str(e)
@@ -229,7 +306,5 @@ class WebReActAgent(dspy.Module):
         if trajectory:
             final_answer = trajectory[-1].get("return_value", "")
 
-        # TODO think whether to add messages, since trajectory seems to be enough
         return dspy.Prediction(answer=final_answer, trajectory=trajectory)
-        # return dspy.Prediction(answer=final_answer, trajectory=trajectory, messages=trajectory_to_messages(trajectory)) 
 
