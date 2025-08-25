@@ -9,7 +9,6 @@ from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.signatures.signature import Signature
 from dspy.clients.lm import LM
 
-# logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 import inspect
 
@@ -107,9 +106,17 @@ class FunctionCallAdapter(ChatAdapter):
             
         except Exception as e:
             # If parent parsing fails, try our custom parsing
-            logger.warning("Parent parse failed, using custom parse: %s", e)
+            logger.debug("Parent parse failed, attempting custom parse: %s", e)
             # print(f"Parent parse failed, using custom parse: {e}")
-            return self._custom_parse(signature, completion)
+            custom_result = self._custom_parse(signature, completion)
+            
+            # Check if custom parse successfully handled a refusal/plain text response
+            if hasattr(custom_result, 'next_selected_fn') and custom_result.next_selected_fn is None:
+                logger.info("Successfully handled model refusal/plain text response via custom parse")
+            else:
+                logger.warning("Custom parse attempted but may need attention - check result: %s", custom_result)
+            
+            return custom_result
     
     def _clean_function_name(self, fn_name):
         logger.debug("Entered FunctionCallAdapter._clean_function_name")
@@ -177,6 +184,10 @@ class FunctionCallAdapter(ChatAdapter):
         elif hasattr(completion, 'content'):
             text = completion.content
         
+        # Convert to string if not already
+        text = str(text).strip()
+        logger.debug("Custom parsing text: %s", repr(text[:100]))  # Log first 100 chars for context
+        
         # Initialize result with signature fields
         result_dict = {}
         
@@ -206,6 +217,23 @@ class FunctionCallAdapter(ChatAdapter):
                     result_dict['args'] = json.loads(args_match.group(1))
                 except json.JSONDecodeError:
                     result_dict['args'] = {}
+        
+        # If no function call pattern found, treat as plain text response
+        if 'next_selected_fn' not in result_dict:
+            logger.info("No function call pattern detected, treating as refusal/plain text response")
+            result_dict['reasoning'] = text
+            result_dict['next_selected_fn'] = None
+            result_dict['args'] = None
+        else:
+            logger.debug("Function call pattern detected: %s", result_dict.get('next_selected_fn'))
+        
+        # Ensure all required fields are present
+        if 'reasoning' not in result_dict:
+            result_dict['reasoning'] = ""
+        if 'next_selected_fn' not in result_dict:
+            result_dict['next_selected_fn'] = None
+        if 'args' not in result_dict:
+            result_dict['args'] = None
         
         # Create prediction object
         return dspy.Prediction(**result_dict)
@@ -237,6 +265,7 @@ class ToolSelectionSignature(dspy.Signature):
     question: str = dspy.InputField()
     trajectory: list = dspy.InputField()
     functions: dict = dspy.InputField()
+    reasoning: str = dspy.OutputField()
     next_selected_fn: str = dspy.OutputField()
     args: Dict[str, Any] = dspy.OutputField()
 
@@ -260,9 +289,23 @@ class WebReActAgent(dspy.Module):
             pred = self.react(question=question, trajectory=trajectory, functions=tools)
             
             # Extract prediction values safely
-            next_selected_fn = str(getattr(pred, "next_selected_fn", "")).strip('"').strip("'")
+            next_selected_fn = getattr(pred, "next_selected_fn", None)
             args = getattr(pred, "args", {})
             reasoning = getattr(pred, "reasoning", None)
+
+            # Handle None function name (safety refusal or unparseable response)
+            if next_selected_fn is None or next_selected_fn == "None":
+                trajectory.append({
+                    "reasoning": reasoning,
+                    "next_selected_fn": None,
+                    "args": None,
+                    "return_value": reasoning or "Agent declined to proceed",
+                    "errors": None
+                })
+                break
+
+            # Clean the function name
+            next_selected_fn = str(next_selected_fn).strip('"').strip("'")
 
             # Safety check: ensure function exists
             if next_selected_fn not in functions:
