@@ -6,7 +6,9 @@ dedicated modules under `src/` to keep this script concise.
 """
 from __future__ import annotations
 
+
 import os
+import argparse
 from dotenv import load_dotenv
 import logging
 from datetime import datetime
@@ -21,11 +23,6 @@ from src.agent import WebReActAgent, FunctionCallAdapter
 from src.utils.logging_setup import setup_logging, mlflow_setup
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 
-# Load environment variables from .env file
-load_dotenv(override=True)
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY environment variable is required")
 
 # %%
 # Logging setup
@@ -33,22 +30,8 @@ logging.basicConfig(level=logging.INFO)
 setup_logging()
 logger = logging.getLogger("main")
 
-# Configuration
-config: Config = load_config(config_path="./src/config/config.yaml")
 
-# MLflow setup
-experiment_name = f"{config.experiment.name}_{config.data.task_name}"
-mlflow_setup(config.experiment.uri, experiment_name)
-
-# Language model setup with enhanced timeout and retry handling
-# Custom adapter for better output parsing
-dspy.configure(
-    lm=create_enhanced_dspy_lm(config.models, api_key), 
-    adapter=FunctionCallAdapter()
-)
-
-# %%
-def prepare_data():
+def prepare_data(config):
     cfg = config.data
     raw_data = load_agentharm_data(
         behavior_ids=list(cfg.behavior_ids or []),
@@ -71,15 +54,42 @@ def prepare_data():
     )
     return trainset, devset
 
-# %%
-def main():
-    # %%
-    trainset, devset = prepare_data()
 
-    # %%
+def main():
+    parser = argparse.ArgumentParser(description="Run evolving-agent-safety main script.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="./src/config/config.yaml",
+        help="Path to the config YAML file (default: ./src/config/config.yaml)",
+    )
+    args = parser.parse_args()
+
+    # Load environment variables from .env file
+    load_dotenv(override=True)
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is required")
+    
+    # Configuration
+    config: Config = load_config(config_path=args.config)
+
+    # MLflow setup
+    experiment_name = f"{config.experiment.name}_{config.data.task_name}_{config.data.split}_detail_{config.data.detailed_behaviors}_hint_{config.data.hint_included}"
+    mlflow_setup(config.experiment.uri, experiment_name)
+
+    # Language model setup with enhanced timeout and retry handling
+    # Custom adapter for better output parsing
+    dspy.configure(
+        lm=create_enhanced_dspy_lm(config.models, api_key), 
+        adapter=FunctionCallAdapter()
+    )
+
+    # Main logic
+    trainset, devset = prepare_data(config)
+
     logger.info("Compiling baseline agent...")
     agent = WebReActAgent()
-    
     logger.info("Setting up metric factory...")
     metric_factory = AgentHarmMetricFactory(
         task_name=config.data.task_name,
@@ -87,7 +97,7 @@ def main():
         semantic_judge_model=config.models.semantic_judge_model,
     )
     metric_fn = metric_factory.metric
-    
+
     logger.info("Setting up evaluation...")
     evaluate = dspy.Evaluate(
         devset=devset,
@@ -100,7 +110,6 @@ def main():
     )
     params = config.as_flat_dict()
 
-    # %%
     # Log config params once
     safe_params = {k: v for k, v in params.items() if isinstance(v, (int, float, str, bool))}
     mlflow.log_params(safe_params)
@@ -111,14 +120,12 @@ def main():
     if os.path.exists(__file__):
         mlflow.log_artifact(__file__, artifact_path="source_code")
 
-    # %%
     # ---- Baseline Eval ----
     logger.info("Evaluating baseline agent...")
     evaluate(agent)
     metric_factory.log_detailed_results("baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("baseline", reset=True)
 
-    # %%
     # ---- Optimization ----
     logger.info("Optimizing agent...")
     optimizer = dspy.MIPROv2(
@@ -140,7 +147,6 @@ def main():
         name="dspy_model",
     )
 
-    # %%
     # ---- Optimized Eval ----
     metric_factory.reset()
     logger.info("Evaluating optimized agent...")
@@ -149,7 +155,6 @@ def main():
     metric_factory.summarize_and_log("optimized", reset=True)
 
     logger.info("Run complete")
-
 
 if __name__ == "__main__":
     main()
