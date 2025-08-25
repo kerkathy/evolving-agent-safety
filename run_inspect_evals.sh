@@ -1,8 +1,16 @@
-inspect eval inspect_evals/agentharm --model openai/gpt-5-nano --limit 1 \
+# https://inspect.aisi.org.uk/providers.html#openai-api
+# follow that to set the openai compatible apis
+
+# inspect eval inspect_evals/agentharm --model openai/gpt-4o-mini --limit 1 \
+
+# inspect eval inspect_evals/agentharm --model openai-api/ge/gpt-4o-mini \
+
+inspect eval inspect_evals/agentharm --model openai-api/ge/gpt-4o-mini --limit 5 \
 -T split=val \
--T refusal_judge="openai/gpt-5-nano" \
--T semantic_judge="openai/gpt-5-nano" \
--T agent_kwargs="{
+-T refusal_judge="openai-api/ge/gpt-4o-2024-08-06" \
+-T semantic_judge="openai-api/ge/gpt-4o-2024-08-06" \
+-T agent_kwargs="{\
 'prompt_technique': 'standard',
-'tool_choice': 'forced_first'
 }"
+
+# 'tool_choice': 'auto'
