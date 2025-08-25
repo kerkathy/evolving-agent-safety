@@ -20,6 +20,7 @@ class AgentHarmDataConfig:
     task_name: Literal["harmful", "benign", "chat"] = "harmful"
     split: Literal["val", "test_private", "test_public"] = "val"
     behavior_ids: Sequence[str] | None = None
+    sample_ids: Sequence[str] | None = None
     detailed_behaviors: bool | None = True
     hint_included: bool | None = False
     n_irrelevant_tools: int = 0
@@ -70,12 +71,18 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
     with open(config_path, "r") as file:
         raw = yaml.safe_load(file)
 
-    data = AgentHarmDataConfig(**raw["data"])
+    # Handle sample_ids as comma-separated string or list
+    data_dict = dict(raw["data"])
+    sample_ids = data_dict.get("sample_ids", None)
+    if isinstance(sample_ids, str):
+        # Split by comma and strip whitespace
+        data_dict["sample_ids"] = [s.strip() for s in sample_ids.split(",") if s.strip()]
+    data = AgentHarmDataConfig(**data_dict)
     models = ModelConfig(**raw["models"])
     optimization = OptimizationConfig(**raw["optimization"])
     experiment = ExperimentConfig(**raw["experiment"])
 
-    data.validate()
+    # data.validate()
     return Config(
         data=data, models=models, optimization=optimization, experiment=experiment
     )

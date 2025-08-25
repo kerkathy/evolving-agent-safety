@@ -18,6 +18,7 @@ from src.utils.sync_wrappers import convert_tools_to_sync
 
 def load_agentharm_data(
     behavior_ids: List[str] | None = None,
+    sample_ids: List[str] | None = None,
     task_name: Literal["harmful", "benign", "chat"] = "harmful",
     split: Literal["val", "test_private", "test_public"] = "test_public",
     detailed_behaviors: Optional[bool] = None,
@@ -32,8 +33,12 @@ def load_agentharm_data(
     """
 
     behavior_ids = behavior_ids or []
+    sample_ids = sample_ids or []
     dataset = load_dataset(task_name, split)
     dataset = filter_dataset(dataset, behavior_ids, detailed_behaviors, hint_included)
+    if sample_ids:
+        # Only keep samples whose id is in sample_ids
+        dataset = [s for s in dataset if getattr(s, "id", None) in sample_ids]
     all_tool_names = get_benchmark_tools(task_name) if task_name != "chat" else []
 
     data: List[Dict[str, Any]] = []
