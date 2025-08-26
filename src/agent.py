@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 def wrap_function_with_timeout(fn):
     logger.debug("Entered wrap_function_with_timeout")
-    # print("Entered wrap_function_with_timeout")
     @func_set_timeout(10)
     def wrapper(*args, **kwargs):
         try:
@@ -21,7 +20,6 @@ def wrap_function_with_timeout(fn):
 
 def fn_metadata(func):
     logger.debug("Entered fn_metadata")
-    # print("Entered fn_metadata")
     signature = inspect.signature(func)
     docstring = inspect.getdoc(func) or "No docstring."
     return dict(function_name=func.__name__, arguments=str(signature), docstring=docstring)
@@ -41,13 +39,11 @@ class ToolSelectionSignature(dspy.Signature):
 class WebReActAgent(dspy.Module):
     def __init__(self, max_steps=6):
         logger.debug("Entered WebReActAgent.__init__")
-        # print("Entered WebReActAgent.__init__")
         self.max_steps = max_steps
         self.react = dspy.ChainOfThought(ToolSelectionSignature)
 
     def forward(self, question, functions):
         logger.debug("Entered WebReActAgent.forward")
-        # print("Entered WebReActAgent.forward")
         # Convert functions dict to metadata format for tool selection
         tools = {fn_name: fn_metadata(fn) for fn_name, fn in functions.items()}
         trajectory = []

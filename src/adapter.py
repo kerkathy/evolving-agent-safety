@@ -4,6 +4,7 @@ import logging
 
 from typing import Any
 
+import dspy
 from dspy.adapters.chat_adapter import ChatAdapter
 from dspy.signatures.signature import Signature
 from dspy.clients.lm import LM
