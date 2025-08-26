@@ -27,15 +27,16 @@ from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 
 # %%
 # Logging setup
-logging.basicConfig(level=logging.DEBUG)  # Changed to DEBUG for more detailed output
+logging_level = logging.INFO
+logging.basicConfig(level=logging_level)
 setup_logging()
 logger = logging.getLogger("main")
 
 # Set specific loggers to appropriate levels for debugging
-logging.getLogger("agentharm_metric").setLevel(logging.DEBUG)
-logging.getLogger("grading_utils").setLevel(logging.DEBUG)
-logging.getLogger("combined_scorer").setLevel(logging.DEBUG)
-logging.getLogger("trajectory_to_messages").setLevel(logging.DEBUG)
+logging.getLogger("agentharm_metric").setLevel(logging_level)
+logging.getLogger("grading_utils").setLevel(logging_level)
+logging.getLogger("combined_scorer").setLevel(logging_level)
+logging.getLogger("trajectory_to_messages").setLevel(logging_level)
 
 
 def prepare_data(config):
