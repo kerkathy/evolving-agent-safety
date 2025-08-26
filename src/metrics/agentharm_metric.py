@@ -11,7 +11,8 @@ import logging
 import threading
 
 import numpy as np
-from inspect_ai.model import ChatMessage, ChatMessageAssistant, get_model
+from inspect_ai.model import ChatMessage, ChatMessageAssistant, ChatMessageTool, get_model
+from inspect_ai.tool import ToolCall
 import mlflow
 
 from external.inspect_evals.src.inspect_evals.agentharm.scorer import RefusalJudgeLLM
@@ -20,16 +21,66 @@ from src.utils.sync_wrappers import asyncio_run_wrapper, get_sync_grading_functi
 
 
 def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage]:
-    """Convert DSPy trajectory entries into inspect_ai ChatMessages."""
+    """Convert DSPy trajectory entries into inspect_ai ChatMessages.
+    
+    Maps DSPy trajectory format to inspect_ai ChatMessage format expected by grading functions:
+    - DSPy uses 'next_selected_fn' -> ChatMessage expects tool_calls[].function  
+    - DSPy uses 'args' -> ChatMessage expects tool_calls[].arguments
+    - DSPy uses 'return_value' -> ChatMessage expects ChatMessageTool with content
+    """
+    logger = logging.getLogger(__name__)
     messages: List[ChatMessage] = []
-    for step in trajectory:
-        if "selected_fn" in step and "args" in step:
-            content = f"I'll call {step['selected_fn']} with arguments: {step['args']}"
-            if step.get("reasoning"):
-                content = f"{step['reasoning']}\n\n{content}"
-            messages.append(ChatMessageAssistant(content=content))
-        if "return_value" in step and step["return_value"]:
-            messages.append(ChatMessageAssistant(content=str(step["return_value"])))
+    
+    logger.debug(f"Converting trajectory with {len(trajectory)} steps")
+    
+    for i, step in enumerate(trajectory):
+        logger.debug(f"Step {i}: {step}")
+        
+        # Check for function call - DSPy can use either 'selected_fn' or 'next_selected_fn'
+        function_name = step.get("selected_fn") or step.get("next_selected_fn")
+        args = step.get("args", {})
+        
+        logger.debug(f"Step {i}: function_name={function_name}, args={args}")
+        
+        if function_name and function_name != "None":
+            # Create tool call for assistant message
+            tool_call = ToolCall(
+                id=f"call_{i}",  # Generate unique ID for each tool call
+                function=function_name,
+                arguments=args,
+                type="function"
+            )
+            
+            # Create assistant message with tool call
+            content = step.get("reasoning", "")  # Include reasoning if present
+            assistant_msg = ChatMessageAssistant(
+                content=content,
+                tool_calls=[tool_call]
+            )
+            messages.append(assistant_msg)
+            logger.debug(f"Added assistant message: role={assistant_msg.role}, tool_calls={[tc.function for tc in assistant_msg.tool_calls]}")
+            
+            # Create tool result message if there's a return value
+            if "return_value" in step and step["return_value"] is not None:
+                tool_msg = ChatMessageTool(
+                    content=str(step["return_value"]),
+                    tool_call_id=f"call_{i}",
+                    function=function_name
+                )
+                messages.append(tool_msg)
+                logger.debug(f"Added tool message: role={tool_msg.role}, function={tool_msg.function}, content_length={len(str(step['return_value']))}")
+        else:
+            logger.debug(f"Step {i}: No function call (function_name={function_name})")
+    
+    logger.debug(f"Final messages: {len(messages)} total")
+    for j, msg in enumerate(messages):
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            logger.debug(f"Message {j}: role={msg.role}, tool_calls={[tc.function for tc in msg.tool_calls]}")
+        elif hasattr(msg, 'function'):
+            logger.debug(f"Message {j}: role={msg.role}, function={msg.function}")
+        else:
+            logger.debug(f"Message {j}: role={msg.role}, content_length={len(str(msg.content))}")
+    
     return messages
 
 
@@ -54,11 +105,35 @@ class AgentHarmMetricFactory:
     def _score_sync(self, example, pred, trace=None) -> float:
         """Synchronous scoring function for DSPy compatibility."""
         grading_function_name = getattr(example, "grading_function", "")
-        logging.getLogger(__name__).debug("Scoring example with grading function: %s", grading_function_name)
+        self.logger.info(f"=== SCORING EXAMPLE ===")
+        self.logger.info(f"Grading function: {grading_function_name}")
+        
         trajectory = getattr(pred, "trajectory", [])
+        self.logger.info(f"Trajectory has {len(trajectory)} steps")
+        
+        # Debug: print raw trajectory
+        for i, step in enumerate(trajectory):
+            self.logger.debug(f"Raw trajectory step {i}: {step}")
+        
         messages = trajectory_to_messages(trajectory)
+        self.logger.info(f"Converted to {len(messages)} messages")
+        
+        # Log message structure for debugging
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                tool_calls_info = [{"function": tc.function, "args": tc.arguments} for tc in msg.tool_calls]
+                self.logger.debug(f"Message {i}: role={msg.role}, tool_calls={tool_calls_info}")
+            elif hasattr(msg, 'function'):
+                self.logger.debug(f"Message {i}: role={msg.role}, function={msg.function}, content_preview={str(msg.content)[:100]}...")
+            else:
+                self.logger.debug(f"Message {i}: role={msg.role}, content_preview={str(msg.content)[:100]}...")
+        
         metadata = dict(getattr(example, "metadata", {}) or {})
         metadata["semantic_judge"] = self.semantic_judge_model
+        
+        # Debug: print target functions from metadata
+        target_functions = metadata.get("target_functions", [])
+        self.logger.info(f"Target functions from metadata: {target_functions}")
 
         # Capture run ID on first call
         if self._current_run_id is None and mlflow.active_run():
@@ -67,24 +142,73 @@ class AgentHarmMetricFactory:
         # Use sync grading function
         try:
             sync_grading_func = get_sync_grading_function(self.task_name, grading_function_name)
+            self.logger.info(f"Calling grading function: {grading_function_name}")
+            
+            # Enable debug logging for grading functions
+            grading_logger = logging.getLogger("grading_utils")
+            grading_logger.setLevel(logging.DEBUG)
+            
             score_dict = sync_grading_func(metadata, messages)
+            self.logger.info(f"Grading result: {score_dict}")
             task_score = float(np.mean(list(score_dict.values()))) if score_dict else 0.0
+            self.logger.info(f"Task score (mean): {task_score}")
+            
+            # Debug: manually check key grading function calls for this example
+            from external.inspect_evals.src.inspect_evals.agentharm.benchmark.grading_utils import (
+                is_function_called, get_all_function_calls, get_args_of_function_call
+            )
+            
+            self.logger.info("=== MANUAL GRADING DEBUG ===")
+            all_functions = get_all_function_calls(messages)
+            self.logger.info(f"All function calls found: {all_functions}")
+            
+            for target_fn in target_functions:
+                is_called = is_function_called(messages, target_fn)
+                self.logger.info(f"is_function_called('{target_fn}'): {is_called}")
+                if is_called:
+                    args = get_args_of_function_call(messages, target_fn)
+                    self.logger.info(f"get_args_of_function_call('{target_fn}'): {args}")
+            
         except (AttributeError, Exception) as e:
-            self.logger.warning("Failed to get grading function %s: %s", grading_function_name, e)
+            self.logger.warning("Failed to get grading function %s: %s", grading_function_name, e, exc_info=True)
             score_dict = {}
             task_score = 0.0
 
         # Refusal detection (binary) - now synchronous
         refusal_score = 0.0
-        for message in messages:
-            content = getattr(message, "content", None)
-            if not content:
-                continue
-            refusal, _ = self._sync_refusal_check(str(content))
-            if refusal:
-                refusal_score = 1.0
-                break
-
+        refusal_messages = []
+        for i, message in enumerate(messages):
+            # Prefer assistant.text like combined_scorer; fall back to string content if needed
+            assistant_text = None
+            if message.role == "assistant":
+                assistant_text = getattr(message, "text", None)
+                if not assistant_text and isinstance(getattr(message, "content", None), str):
+                    assistant_text = message.content
+            if message.role == "assistant" and assistant_text not in ["", None, []]:
+                try:
+                    refusal, explanation = self._sync_refusal_check(assistant_text)
+                except Exception as e:
+                    self.logger.warning("Refusal judge error on message %d: %s", i, e, exc_info=True)
+                    refusal, explanation = False, f"Error: {e}"
+                self.logger.debug(
+                    "Refusal check message %d: content='%s...', refusal=%s",
+                    i,
+                    assistant_text[:100] if assistant_text else "",
+                    refusal,
+                )
+                refusal_messages.append({
+                    "message_idx": i,
+                    "content_preview": assistant_text[:100] if assistant_text else "",
+                    "refusal": refusal,
+                    "explanation": explanation[:200] if explanation else "",
+                })
+                if refusal:
+                    refusal_score = 1.0
+                    self.logger.info(f"Found refusal in message {i}")
+                    break
+        
+        self.logger.info(f"Refusal score: {refusal_score}")
+        
         # Log summary metrics
         record = {
             "grading_function": grading_function_name,
@@ -93,10 +217,13 @@ class AgentHarmMetricFactory:
             "task_name": self.task_name,
             "metadata": metadata,
             "score_dict": score_dict,
+            "num_messages": len(messages),
+            "num_trajectory_steps": len(trajectory),
+            "refusal_details": refusal_messages,
         }
         with self._lock:
             self._records.append(record)
-        self.logger.debug("Metric record: %s", record)
+        self.logger.info(f"=== SCORING COMPLETE: task_score={task_score}, refusal={refusal_score} ===")
         
         return task_score
 
@@ -148,12 +275,15 @@ class AgentHarmMetricFactory:
                     step_records = self._records[start:end]
                     summary = self._calc_and_log_summary(phase, step_records, step=step_idx)
                     summaries[step_idx] = summary
+                return summaries
             else:
                 summary = self._calc_and_log_summary(phase, self._records)
 
             if reset:
                 self._records.clear()
                 self._current_run_id = None
+            
+            return summary
     
 
     def log_detailed_results(self, artifact_name: str = "detailed_results", reset: bool = False):
