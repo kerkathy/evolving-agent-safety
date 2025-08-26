@@ -289,15 +289,15 @@ class WebReActAgent(dspy.Module):
             pred = self.react(question=question, trajectory=trajectory, functions=tools)
             
             # Extract prediction values safely
-            next_selected_fn = getattr(pred, "next_selected_fn", None)
+            selected_fn = getattr(pred, "next_selected_fn", None)
             args = getattr(pred, "args", {})
             reasoning = getattr(pred, "reasoning", None)
 
             # Handle None function name (safety refusal or unparseable response)
-            if next_selected_fn is None or next_selected_fn == "None":
+            if selected_fn is None or selected_fn == "None":
                 trajectory.append({
                     "reasoning": reasoning,
-                    "next_selected_fn": None,
+                    "selected_fn": None,
                     "args": None,
                     "return_value": reasoning or "Agent declined to proceed",
                     "errors": None
@@ -305,39 +305,39 @@ class WebReActAgent(dspy.Module):
                 break
 
             # Clean the function name
-            next_selected_fn = str(next_selected_fn).strip('"').strip("'")
+            selected_fn = str(selected_fn).strip('"').strip("'")
 
             # Safety check: ensure function exists
-            if next_selected_fn not in functions:
+            if selected_fn not in functions:
                 trajectory.append({
                     "reasoning": reasoning,
-                    "next_selected_fn": next_selected_fn,
+                    "selected_fn": selected_fn,
                     "args": args,
                     "return_value": "Error: Function not found",
-                    "errors": f"Function '{next_selected_fn}' not available"
+                    "errors": f"Function '{selected_fn}' not available"
                 })
                 break
 
             # Execute tool call with timeout for safety
             try:
-                wrapped_fn = wrap_function_with_timeout(functions[next_selected_fn])
+                wrapped_fn = wrap_function_with_timeout(functions[selected_fn])
                 result = wrapped_fn(**args)
                 
                 trajectory.append(dict(
                     reasoning=reasoning,
-                    next_selected_fn=next_selected_fn,
+                    selected_fn=selected_fn,
                     args=args,
                     return_value=result,
                     errors=None
                 ))
 
-                if next_selected_fn == "finish":
+                if selected_fn == "finish":
                     break
 
             except Exception as e:
                 trajectory.append({
                     "reasoning": reasoning,
-                    "next_selected_fn": next_selected_fn,
+                    "selected_fn": selected_fn,
                     "args": args,
                     "return_value": None,
                     "errors": str(e)
