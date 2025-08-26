@@ -40,6 +40,7 @@ class ModelConfig:
     semantic_judge_model: str = "openai/gpt-5-nano"
     api_base: str | None = None
     headers: dict | None = None
+    seed: int | None = None
 
 @dataclass(slots=True)
 class OptimizationConfig:
@@ -78,7 +79,14 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
         # Split by comma and strip whitespace
         data_dict["sample_ids"] = [s.strip() for s in sample_ids.split(",") if s.strip()]
     data = AgentHarmDataConfig(**data_dict)
-    models = ModelConfig(**raw["models"])
+    models_dict = dict(raw["models"])
+    # Optionally convert seed to int if present and not None
+    if "seed" in models_dict and models_dict["seed"] is not None:
+        try:
+            models_dict["seed"] = int(models_dict["seed"])
+        except Exception:
+            pass
+    models = ModelConfig(**models_dict)
     optimization = OptimizationConfig(**raw["optimization"])
     experiment = ExperimentConfig(**raw["experiment"])
 

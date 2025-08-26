@@ -32,6 +32,7 @@ class EnhancedDSPyLM(dspy.BaseLM):
         timeout: float = 60.0,
         max_retries: int = 5,
         retry_delay: float = 1.0,
+        seed: Optional[int] = None,
         **kwargs
     ):
         """Initialize enhanced DSPy LM with better timeout handling.
@@ -75,12 +76,12 @@ class EnhancedDSPyLM(dspy.BaseLM):
             "max_tokens": max_tokens,
             **kwargs
         }
-        
+        if seed is not None:
+            lm_args["seed"] = seed
         if api_base is not None:
             lm_args["api_base"] = api_base
         if headers is not None:
             lm_args["headers"] = headers
-        
         # Create underlying DSPy LM with retry logic
         self._underlying_lm = self._create_lm_with_retry(lm_args)
         
@@ -183,12 +184,13 @@ def create_enhanced_dspy_lm(config_models, api_key: str) -> EnhancedDSPyLM:
         "max_retries": 5,  # 5 retries with exponential backoff
         "retry_delay": 1.0,  # Start with 1 second delay
     }
-    
+    # Pass seed if present in config_models
+    if hasattr(config_models, "seed") and config_models.seed is not None:
+        lm_args["seed"] = config_models.seed
     if config_models.api_base is not None:
         lm_args["api_base"] = config_models.api_base
     if config_models.headers is not None:
         lm_args["headers"] = config_models.headers
-    
     return EnhancedDSPyLM(**lm_args)
 
 

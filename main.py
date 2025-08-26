@@ -26,15 +26,22 @@ from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 
 # %%
 # Logging setup
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # Changed to DEBUG for more detailed output
 setup_logging()
 logger = logging.getLogger("main")
+
+# Set specific loggers to appropriate levels for debugging
+logging.getLogger("agentharm_metric").setLevel(logging.DEBUG)
+logging.getLogger("grading_utils").setLevel(logging.DEBUG)
+logging.getLogger("combined_scorer").setLevel(logging.DEBUG)
+logging.getLogger("trajectory_to_messages").setLevel(logging.DEBUG)
 
 
 def prepare_data(config):
     cfg = config.data
     raw_data = load_agentharm_data(
         behavior_ids=list(cfg.behavior_ids or []),
+        sample_ids=list(cfg.sample_ids or []),
         task_name=cfg.task_name,
         split=cfg.split,
         detailed_behaviors=cfg.detailed_behaviors,
@@ -126,35 +133,35 @@ def main():
     metric_factory.log_detailed_results("baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("baseline", reset=True)
 
-    # ---- Optimization ----
-    logger.info("Optimizing agent...")
-    optimizer = dspy.MIPROv2(
-        metric=metric_fn,
-        auto=config.optimization.auto_mode,
-        max_bootstrapped_demos=0,
-        max_labeled_demos=0,
-        num_threads=1,  # Use single thread to avoid async issues
-        verbose=False,
-    )
-    optimized_agent = optimizer.compile(
-        agent, trainset=trainset, seed=config.optimization.optim_seed
-    )
-    metric_factory.log_detailed_results("optimization_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimization", reset=True, num_records_per_step=len(trainset))
+    # # ---- Optimization ----
+    # logger.info("Optimizing agent...")
+    # optimizer = dspy.MIPROv2(
+    #     metric=metric_fn,
+    #     auto=config.optimization.auto_mode,
+    #     max_bootstrapped_demos=0,
+    #     max_labeled_demos=0,
+    #     num_threads=1,  # Use single thread to avoid async issues
+    #     verbose=False,
+    # )
+    # optimized_agent = optimizer.compile(
+    #     agent, trainset=trainset, seed=config.optimization.optim_seed
+    # )
+    # metric_factory.log_detailed_results("optimization_detailed_results", reset=False)
+    # metric_factory.summarize_and_log("optimization", reset=True, num_records_per_step=len(trainset))
 
-    mlflow.dspy.log_model(
-        optimized_agent,
-        name="dspy_model",
-    )
+    # mlflow.dspy.log_model(
+    #     optimized_agent,
+    #     name="dspy_model",
+    # )
 
-    # ---- Optimized Eval ----
-    metric_factory.reset()
-    logger.info("Evaluating optimized agent...")
-    evaluate(optimized_agent, metric=metric_fn)
-    metric_factory.log_detailed_results("final_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimized", reset=True)
+    # # ---- Optimized Eval ----
+    # metric_factory.reset()
+    # logger.info("Evaluating optimized agent...")
+    # evaluate(optimized_agent, metric=metric_fn)
+    # metric_factory.log_detailed_results("final_detailed_results", reset=False)
+    # metric_factory.summarize_and_log("optimized", reset=True)
 
-    logger.info("Run complete")
+    # logger.info("Run complete")
 
 if __name__ == "__main__":
     main()
