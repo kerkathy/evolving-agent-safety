@@ -19,7 +19,8 @@ import mlflow
 from src.config import load_config, Config
 from src.data import load_agentharm_data, build_dspy_examples, split_examples
 from src.metrics import AgentHarmMetricFactory
-from src.agent import WebReActAgent, FunctionCallAdapter
+from src.agent import WebReActAgent
+from src.adapter import FunctionCallAdapter
 from src.utils.logging_setup import setup_logging, mlflow_setup
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 
