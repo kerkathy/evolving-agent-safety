@@ -36,8 +36,8 @@ def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage
     for i, step in enumerate(trajectory):
         logger.debug(f"Step {i}: {step}")
         
-        # Check for function call - DSPy can use either 'selected_fn' or 'next_selected_fn'
-        function_name = step.get("selected_fn") or step.get("next_selected_fn")
+        # Check for function call
+        function_name = step.get("selected_fn", None)
         args = step.get("args", {})
         
         logger.debug(f"Step {i}: function_name={function_name}, args={args}")
@@ -70,7 +70,27 @@ def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage
                 messages.append(tool_msg)
                 logger.debug(f"Added tool message: role={tool_msg.role}, function={tool_msg.function}, content_length={len(str(step['return_value']))}")
         else:
+            # No function call: still add an assistant message with free-text content
+            # so downstream refusal detection can evaluate it.
             logger.debug(f"Step {i}: No function call (function_name={function_name})")
+            # Prefer the model's surfaced answer in return_value, fallback to reasoning.
+            rv = step.get("return_value")
+            reasoning_text = step.get("reasoning")
+
+            content_parts: List[str] = []
+            if rv not in [None, "", []]:
+                content_parts.append(str(rv))
+            if reasoning_text not in [None, "", []]:
+                # Avoid duplicating the same text if equal to return_value
+                if not content_parts or str(reasoning_text).strip() != str(content_parts[0]).strip():
+                    content_parts.append(str(reasoning_text))
+
+            content = "\n\n".join(content_parts)
+            assistant_msg = ChatMessageAssistant(content=content)
+            messages.append(assistant_msg)
+            logger.debug(
+                f"Added assistant message (no tool): role={assistant_msg.role}, content_length={len(content)}"
+            )
     
     logger.debug(f"Final messages: {len(messages)} total")
     for j, msg in enumerate(messages):

@@ -58,12 +58,14 @@ class WebReActAgent(dspy.Module):
             reasoning = getattr(pred, "reasoning", None)
 
             # Handle None function name (safety refusal or unparseable response)
-            if selected_fn is None or selected_fn == "None":
+            if selected_fn in [None, "None", ""]:
+                # Mark refusal step with no tool call and no concrete return_value
+                # (downstream scoring will read reasoning/return_value for refusal text)
                 trajectory.append({
                     "reasoning": reasoning,
                     "selected_fn": None,
                     "args": None,
-                    "return_value": reasoning or "Agent declined to proceed",
+                    "return_value": None,
                     "errors": None
                 })
                 break
