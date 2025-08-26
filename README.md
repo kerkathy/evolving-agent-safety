@@ -7,7 +7,7 @@ Investigate the safety of self-evolving LLM agents using the [AgentHarm](https:/
 - Python 3.12+
 - OpenAI API key (set in a .env file or environment variable)
 
-Project dependencies are defined in `pyproject.toml` and include: `dspy`, `inspect-ai`, `mlflow`, `pyyaml`, `aiohttp`, `ipywidgets`. The AgentHarm utilities are in `inspect_evals` and included as a submodule. 
+Project dependencies are defined in `pyproject.toml`. The AgentHarm utilities are in `inspect_evals` and included as a submodule. 
 
 ## Prerequisite
 1) Fetch the submodule `inspect_evals`
@@ -17,7 +17,7 @@ git submodule update --init --recursive
 
 2) Set your OpenAI API key
 
-`.env` (recommended):
+In `.env` (recommended):
 
 ```
 OPENAI_API_KEY=sk-...
@@ -29,8 +29,8 @@ Or via shell (temporary):
 export OPENAI_API_KEY=sk-...
 ```
 
-
-## Option 1 (Recommended): Using uv
+## Set Up Environment and run
+### Option 1 (Recommended): Using uv
 
 If you use [uv](https://github.com/astral-sh/uv), you can install and run faster:
 
@@ -46,7 +46,7 @@ bash setup_tracker.sh
 uv run main.py --config ./src/config/config.yaml
 ```
 
-## Option 2 (Alternative): Using venv
+### Option 2 (Alternative): Using venv
 
 1) Create a virtual environment and install dependencies
 
@@ -119,10 +119,7 @@ Notes:
 3) Runs evaluation on the dev split (baseline). Optimization is scaffolded but commented out.
 4) Logs parameters, metrics, detailed results, and a source snapshot to MLflow.
 
-Artifacts and logs:
-
-- MLflow: runs, metrics, and artifacts (including source code snapshot)
-- Results folders under `results/` may contain logs and comparisons
+To see the results, open a browser and open your mlflow client (usually at `http://127.0.0.1:5000`.) Model metrics, traces for each sample, and other detailed logs can be seen there.
 
 ## Troubleshooting
 
@@ -133,7 +130,6 @@ Artifacts and logs:
 - Timeouts/retries: The project uses an enhanced DSPy LM wrapper with backoff. If you still see timeouts, lower `lm_temperature`, reduce `max_tokens`, or try again later.
 
 ## Run Original AgentHarm Benchmark Using Inspect Evals (CLI)
-
 This repo includes a helper script `run_inspect_evals.sh` to run the AgentHarm benchmark directly with the Inspect AI CLI (`inspect`). This is for reproducing the results in the [AgentHarm paper](https://arxiv.org/abs/2410.09024) and ensuring our inital evaluation has the correct numbers. 
 <!-- It targets the `openai-api/ge/...` provider alias, which expects credentials via environment variables. -->
 
@@ -205,6 +201,7 @@ Common tweaks:
 - Shuffle seed: add `--sample-shuffle 0`
 - Change split: update `-T split=val|test_public|test_private`
 
+After the run finishes, you can view the results directly via Inspect AI's VSCode extension, or use `insepct view` to open up a browser window to see results. Refer to their websites for details on [intepreting the logs](https://inspect.aisi.org.uk/log-viewer.html) and [their VSCode extension](https://inspect.aisi.org.uk/vscode.html).
 
 ## License
 
