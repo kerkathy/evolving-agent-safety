@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Literal, Optional
 import dspy
 
 # External package imports (agentharm + inspect ai) are retained here.
-from agentharm.utils import load_dataset, filter_dataset, get_benchmark_tools
-from agentharm.benchmark import harmful_tools, benign_tools
+from external.inspect_evals.src.inspect_evals.agentharm.utils import load_dataset, filter_dataset, get_benchmark_tools
+from external.inspect_evals.src.inspect_evals.agentharm.benchmark import harmful_tools, benign_tools
 from src.utils.sync_wrappers import convert_tools_to_sync
 
 

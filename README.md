@@ -8,9 +8,13 @@ Investigate the safety of self-evolving LLM agents using the AgentHarm benchmark
 - Python 3.12+
 - OpenAI API key (set in a .env file or environment variable)
 
-Project dependencies are defined in `pyproject.toml` and include: `dspy`, `inspect-ai`, `mlflow`, `pyyaml`, `aiohttp`, `ipywidgets`. The AgentHarm utilities are included as a local module (`agentharm/`).
+Project dependencies are defined in `pyproject.toml` and include: `dspy`, `inspect-ai`, `mlflow`, `pyyaml`, `aiohttp`, `ipywidgets`. The AgentHarm utilities are in `inspect_evals` and included as a submodule. 
 
 ## Quick start
+0) Fetch the submodule `inspect_evals`
+```bash
+git submodule update --init --recursive
+```
 
 1) Create a virtual environment and install dependencies
 
