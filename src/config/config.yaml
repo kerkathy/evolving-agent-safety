@@ -4,7 +4,6 @@ data:
   train_fraction: 0 # temp, debug # if split=val, then have to =0.5
   shuffle_seed: 0
   behavior_ids: []
-  sample_ids: "1-1,1-2,1-3,1-4,10-1,10-2,10-3,10-4" # debug: make sure the function calcing scores is without looping over same grading
   # sample_ids: "1-1,1-2,1-3,1-4,10-1,10-2,10-3,10-4" # list of example IDs to select specific samples
   detailed_behaviors: 
   hint_included: 
@@ -15,12 +14,12 @@ models:
   lm_temperature: 0
   seed: 42
   max_tokens: 4096 # 20000 for 5
-  refusal_judge_model:  openai/gpt-4o-mini # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
-  semantic_judge_model: openai/gpt-4o-mini # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
-  # api_base: 
-  # api_base: https://run.v36.cm/v1/
-  # headers:
-  #   x-foo: "true"
+  refusal_judge_model:  openai/gpt-4o-2024-08-06 # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
+  semantic_judge_model: openai/gpt-4o-2024-08-06 # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
+  api_base: 
+  api_base: https://run.v36.cm/v1/
+  headers:
+    x-foo: "true"
 
 optimization:
   optim_seed: 6793115

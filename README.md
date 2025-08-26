@@ -1,20 +1,52 @@
 # Evolving Agent Safety
 
-Investigate the safety of self-evolving LLM agents using the AgentHarm benchmark with DSPy for agent logic and MLflow for tracking.
+Investigate the safety of self-evolving LLM agents using the [AgentHarm](https://huggingface.co/datasets/ai-safety-institute/AgentHarm) benchmark with [DSPy](https://dspy.ai/) for prompt optimization and agent logic, and [MLflow](https://mlflow.org/docs/latest/) for auto tracking.
 
 ## Requirements
 
-- Linux or macOS (tested on Linux)
 - Python 3.12+
 - OpenAI API key (set in a .env file or environment variable)
 
 Project dependencies are defined in `pyproject.toml` and include: `dspy`, `inspect-ai`, `mlflow`, `pyyaml`, `aiohttp`, `ipywidgets`. The AgentHarm utilities are in `inspect_evals` and included as a submodule. 
 
-## Quick start
-0) Fetch the submodule `inspect_evals`
+## Prerequisite
+1) Fetch the submodule `inspect_evals`
 ```bash
 git submodule update --init --recursive
 ```
+
+2) Set your OpenAI API key
+
+`.env` (recommended):
+
+```
+OPENAI_API_KEY=sk-...
+```
+
+Or via shell (temporary):
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+
+## Option 1 (Recommended): Using uv
+
+If you use [uv](https://github.com/astral-sh/uv), you can install and run faster:
+
+```bash
+# install deps
+uv sync
+
+# Setup mlflow client in another bash session
+source .venv/bin/activate
+bash setup_tracker.sh
+
+# run (inside the env uv creates)
+uv run main.py --config ./src/config/config.yaml
+```
+
+## Option 2 (Alternative): Using venv
 
 1) Create a virtual environment and install dependencies
 
@@ -30,35 +62,14 @@ pip install -e . || true
 pip install python-dotenv openai httpx
 ```
 
-2) Set your OpenAI API key
-
-Create a `.env` file at the project root or export it in your shell.
-
-`.env` (recommended):
-
-```
-OPENAI_API_KEY=sk-...
-```
-
-Or via shell (temporary):
-
-```bash
-export OPENAI_API_KEY=sk-...
-```
-
-3) Start the MLflow tracking server (in another terminal)
+2) Start the MLflow tracking server (in another terminal)
 
 The default tracking URI is `http://127.0.0.1:5000` (see `src/config/config.yaml`). You can use the provided helper script:
 
 ```bash
 bash setup_tracker.sh
 ```
-
-This runs MLflow with a local SQLite backend (`mydb.sqlite`). Alternatively:
-
-```bash
-mlflow server --backend-store-uri sqlite:///mydb.sqlite --host 127.0.0.1 --port 5000
-```
+This runs MLflow with a local SQLite backend (`mydb.sqlite`).
 
 If `mlflow` isn’t found, install it inside the venv:
 
@@ -66,7 +77,7 @@ If `mlflow` isn’t found, install it inside the venv:
 pip install mlflow
 ```
 
-4) Run the main script
+3) Run the main script
 
 By default, the script uses `./src/config/config.yaml`:
 
@@ -121,36 +132,54 @@ Artifacts and logs:
 - Python version errors: Ensure you’re on Python 3.12+ (`requires-python = ">=3.12"`).
 - Timeouts/retries: The project uses an enhanced DSPy LM wrapper with backoff. If you still see timeouts, lower `lm_temperature`, reduce `max_tokens`, or try again later.
 
-## Run Inspect Evals (CLI)
+## Run Original AgentHarm Benchmark Using Inspect Evals (CLI)
 
-This repo includes a helper script `run_inspect_evals.sh` to run the AgentHarm benchmark directly with the Inspect AI CLI (`inspect`). It targets the `openai-api/ge/...` provider alias, which expects credentials via environment variables.
+This repo includes a helper script `run_inspect_evals.sh` to run the AgentHarm benchmark directly with the Inspect AI CLI (`inspect`). This is for reproducing the results in the [AgentHarm paper](https://arxiv.org/abs/2410.09024) and ensuring our inital evaluation has the correct numbers. 
+<!-- It targets the `openai-api/ge/...` provider alias, which expects credentials via environment variables. -->
 
-1) Ensure dependencies are available in your venv
+1) (Optional) If you haven't followed either [Option 1](#option-1-recommended-using-uv) or [Option 2](#option-2-alternative-using-venv) to installed packages, ensure these dependencies are available in your venv.
 
 ```bash
 pip install inspect-ai
+pip install git+https://github.com/UKGovernmentBEIS/inspect_evals
 ```
 
-2) Configure `.env` for Inspect Evals
+2) Create and configure `.env` for Inspect Evals
 
-Add the following to `.env` (or export them in your shell):
+If you want to use the default OpenAI provider (recommended):
 
 ```
-# Credentials for the named provider alias "openai-api/ge/..."
+# Default OpenAI provider
+OPENAI_API_KEY=sk-...
+# (Optional) Explicitly set the default base URL if needed
+# OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+If you want to use other OpenAI-compatible endpoints:
+
+```
+# Use a custom named provider alias (example: "openai-api/ge/...")
 GE_API_KEY=sk-...
 GE_BASE_URL=https://api.gpt.ge/v1/
+```
 
-# Optional: logging and runtime tuning for Inspect AI
+Note: You have to keep `run_inspect_evals.sh` compatible with the variables in `.env`: 
+- For the default provider, use `--model openai/gpt-4o-mini` and related `-T ..._judge` values.
+- For compatible endpoints using a named provider alias, you must pass the alias in CLI args: use `--model openai-api/ge/gpt-4o-mini` instead of `--model openai/gpt-4o-mini` (apply the same pattern for `-T refusal_judge` and `-T semantic_judge`). 
+- Keep `OPENAI_API_KEY` for running `main.py`; `GE_*` variables are used only when calling models as `openai-api/ge/...` via Inspect.
+- In `run_inspect_evals.sh`, you can switch providers by setting `INSPECT_PROVIDER_PREFIX=openai` or `INSPECT_PROVIDER_PREFIX=openai-api/ge`.
+- For more detailed usage please refer to [the API usage instruction by Inspect AI](https://inspect.aisi.org.uk/providers.html#openai-api).
+
+Optional: specify other Inspect AI options (see [here](https://inspect.aisi.org.uk/options.html) for a complete list)
+
+```
 INSPECT_LOG_DIR=./results/logs
 INSPECT_LOG_LEVEL=warning
 INSPECT_EVAL_MAX_RETRIES=5
 INSPECT_EVAL_MAX_CONNECTIONS=20
 ```
 
-Notes:
-- If you are using a different OpenAI-compatible endpoint, set `GE_BASE_URL` to that base URL (e.g., `https://run.v36.cm/v1/`).
-- You can keep `OPENAI_API_KEY` for running `main.py`; `GE_*` variables are used only when calling models as `openai-api/ge/...` via Inspect.
-- You can also use the standard `OPENAI_API_KEY` and `OPENAI_BASE_URL` for the default `openai` provider. See Inspect AI docs for provider specifics.
+Also important: set the exact model strings you want in the Bash script (`run_inspect_evals.sh`) so the CLI uses the intended models for both the agent and judges.
 
 3) Run the script
 
@@ -160,10 +189,10 @@ source .env
 bash run_inspect_evals.sh
 ```
 
-The script demonstrates setting explicit `sample_ids` and uses:
+The script uses:
 
 ```
-inspect eval inspect_evals/agentharm --model openai-api/ge/gpt-4o-mini --seed 42 --sample-id "1-1,1-2,..." \
+inspect eval inspect_evals/agentharm --model openai-api/ge/gpt-4o-mini --seed 42 \
 	-T split=test_public \
 	-T refusal_judge="openai-api/ge/gpt-4o-mini" \
 	-T semantic_judge="openai-api/ge/gpt-4o-mini" \
@@ -171,21 +200,11 @@ inspect eval inspect_evals/agentharm --model openai-api/ge/gpt-4o-mini --seed 42
 ```
 
 Common tweaks:
-- Limit items: add `--limit 10`
+- Run items with certain ids: add `--sample_ids "1-1,1-2,1-3"`
+- Limit number of items: add `--limit 10`
 - Shuffle seed: add `--sample-shuffle 0`
 - Change split: update `-T split=val|test_public|test_private`
 
-## Optional: Using uv
-
-If you use [uv](https://github.com/astral-sh/uv), you can install and run faster:
-
-```bash
-# install deps
-uv sync
-
-# run (inside the env uv creates)
-uv run python main.py --config ./src/config/config.yaml
-```
 
 ## License
 
