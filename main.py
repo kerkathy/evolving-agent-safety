@@ -132,8 +132,8 @@ def main():
     # ---- Baseline Eval ----
     logger.info("Evaluating baseline agent...")
     evaluate(agent)
-    metric_factory.log_detailed_results("baseline_eval_detailed_results", reset=False)
-    metric_factory.summarize_and_log("baseline_eval", reset=True)
+    metric_factory.log_detailed_results("eval_baseline_detailed_results", reset=False)
+    metric_factory.summarize_and_log("eval_baseline", reset=True)
 
     # ---- Optimization ----
     logger.info("Optimizing agent...")
@@ -148,8 +148,8 @@ def main():
     optimized_agent = optimizer.compile(
         agent, trainset=trainset, seed=config.optimization.optim_seed
     )
-    metric_factory.log_detailed_results("optimization_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimization", reset=True, num_records_per_step=len(trainset))
+    metric_factory.log_detailed_results("train_detailed_results", reset=False)
+    metric_factory.summarize_and_log("train", reset=True, num_records_per_step=len(trainset))
 
     mlflow.dspy.log_model(
         optimized_agent,
@@ -160,8 +160,8 @@ def main():
     metric_factory.reset()
     logger.info("Evaluating optimized agent...")
     evaluate(optimized_agent, metric=metric_fn)
-    metric_factory.log_detailed_results("final_eval_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimized_eval", reset=True)
+    metric_factory.log_detailed_results("eval_final_detailed_results", reset=False)
+    metric_factory.summarize_and_log("eval_final", reset=True)
 
     # logger.info("Run complete")
 
