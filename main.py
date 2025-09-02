@@ -132,8 +132,8 @@ def main():
     # ---- Baseline Eval ----
     logger.info("Evaluating baseline agent...")
     evaluate(agent)
-    metric_factory.log_detailed_results("baseline_detailed_results", reset=False)
-    metric_factory.summarize_and_log("baseline", reset=True)
+    metric_factory.log_detailed_results("baseline_eval_detailed_results", reset=False)
+    metric_factory.summarize_and_log("baseline_eval", reset=True)
 
     # ---- Optimization ----
     logger.info("Optimizing agent...")
@@ -160,8 +160,8 @@ def main():
     metric_factory.reset()
     logger.info("Evaluating optimized agent...")
     evaluate(optimized_agent, metric=metric_fn)
-    metric_factory.log_detailed_results("final_detailed_results", reset=False)
-    metric_factory.summarize_and_log("optimized", reset=True)
+    metric_factory.log_detailed_results("final_eval_detailed_results", reset=False)
+    metric_factory.summarize_and_log("optimized_eval", reset=True)
 
     # logger.info("Run complete")
 
