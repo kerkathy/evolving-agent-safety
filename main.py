@@ -105,12 +105,11 @@ def main():
         refusal_judge_model=config.models.refusal_judge_model,
         semantic_judge_model=config.models.semantic_judge_model,
     )
-    metric_fn = metric_factory.metric
 
     logger.info("Setting up evaluation...")
     evaluate = dspy.Evaluate(
         devset=devset,
-        metric=metric_fn,
+        metric=metric_factory.metric,
         num_threads=1,  # Use single thread to avoid async issues
         display_progress=True,
         display_table=0,
@@ -137,17 +136,49 @@ def main():
 
     # ---- Optimization ----
     logger.info("Optimizing agent...")
-    optimizer = dspy.MIPROv2(
-        metric=metric_fn,
-        auto=config.optimization.auto_mode,
-        max_bootstrapped_demos=0,
-        max_labeled_demos=0,
-        num_threads=1,  # Use single thread to avoid async issues
-        verbose=False,
-    )
-    optimized_agent = optimizer.compile(
-        agent, trainset=trainset, seed=config.optimization.optim_seed
-    )
+
+    optimizer_name = getattr(config.optimization, "algorithm", "gepa")
+    optimizer = None
+    if optimizer_name == "mipro":
+        logger.info("Using MIPROv2 optimizer")
+        optimizer = dspy.MIPROv2(
+            metric=metric_factory.metric,
+            auto=config.optimization.auto_mode,
+            max_bootstrapped_demos=0,
+            max_labeled_demos=0,
+            num_threads=config.optimization.num_threads,
+            verbose=False,
+        )
+        optimized_agent = optimizer.compile(
+            agent, trainset=trainset, seed=config.optimization.optim_seed
+        )
+    elif optimizer_name == "copro":
+        logger.info("Using COPRO optimizer")
+        optimizer = dspy.COPRO(
+            metric=metric_factory.metric,
+            verbose=False,
+        )
+        optimized_agent = optimizer.compile(
+            agent, trainset=trainset, eval_kwargs={}
+        )
+    elif optimizer_name == "gepa":
+        logger.info("Using GEPA optimizer")
+        optimizer = dspy.GEPA(
+            metric=metric_factory.metric_with_feedback,  # type: ignore[arg-type]
+            auto=config.optimization.auto_mode,
+            num_threads=config.optimization.num_threads,
+            track_stats=True,
+            use_merge=False,
+            reflection_lm=create_enhanced_dspy_lm(config.models, api_key),  # type: ignore[arg-type]
+        )
+        optimized_agent = optimizer.compile(
+            agent,
+            trainset=trainset,
+            # valset=devset,
+        )
+    else:
+        raise ValueError(f"Unknown optimization algorithm: {optimizer_name}")
+
     metric_factory.log_detailed_results("train_detailed_results", reset=False)
     metric_factory.summarize_and_log("train", reset=True, num_records_per_step=len(trainset))
 
@@ -163,7 +194,7 @@ def main():
     metric_factory.log_detailed_results("eval_final_detailed_results", reset=False)
     metric_factory.summarize_and_log("eval_final", reset=True)
 
-    # logger.info("Run complete")
+    logger.info("Run complete")
 
 if __name__ == "__main__":
     main()

@@ -14,6 +14,7 @@ import numpy as np
 from inspect_ai.model import ChatMessage, ChatMessageAssistant, ChatMessageTool, get_model
 from inspect_ai.tool import ToolCall
 import mlflow
+import dspy
 
 from external.inspect_evals.src.inspect_evals.agentharm.scorer import RefusalJudgeLLM
 from src.utils.logging_setup import mlflow_log_metrics
@@ -122,7 +123,7 @@ class AgentHarmMetricFactory:
         # Create synchronous wrappers for async operations
         self._sync_refusal_check = asyncio_run_wrapper(self.refusal_judge_model.check_refusal)
 
-    def _score_sync(self, example, pred, trace=None) -> float:
+    def _score_sync(self, example, pred, trace=None) -> dict:
         """Synchronous scoring function for DSPy compatibility."""
         grading_function_name = getattr(example, "grading_function", "")
         self.logger.info(f"=== SCORING EXAMPLE ===")
@@ -244,12 +245,20 @@ class AgentHarmMetricFactory:
         with self._lock:
             self._records.append(record)
         self.logger.info(f"=== SCORING COMPLETE: task_score={task_score}, refusal={refusal_score} ===")
-        
-        return task_score
+
+        return {"task_score": task_score, "score_dict": score_dict}
 
     def metric(self, example, pred, trace=None) -> float:
         """Synchronous metric for use with DSPy."""
-        return float(self._score_sync(example, pred, trace))
+        return float(self._score_sync(example, pred, trace).get("task_score", 0))
+    
+    def metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> float:
+        result = self._score_sync(example, pred, trace)
+        succeeded_task = [k for k, v in result["score_dict"].items() if v == True]
+        failed_task = [k for k, v in result["score_dict"].items() if v == False]
+        feedback = f"You succeeded in the following tasks: {', '.join(succeeded_task)}. "
+        feedback += f"You failed in the following tasks: {', '.join(failed_task)}."
+        return dspy.Prediction(score=result["task_score"], feedback=feedback)
 
     def _calc_and_log_summary(self, phase, records, step=None):
         task_scores = [r["task_score"] for r in records]

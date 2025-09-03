@@ -1,7 +1,7 @@
 data:
   task_name: harmful
   split: test_public # val, test_public, test_private
-  train_fraction: 0.2 # temp, debug # if split=val, then have to =0.5
+  train_fraction: 0.4 # temp, debug # if split=val, then have to =0.5
   shuffle_seed: 0
   behavior_ids: []
   # sample_ids: "1-1,1-2,1-3,1-4,10-1,10-2,10-3,10-4" # list of example IDs to select specific samples
@@ -23,9 +23,10 @@ models:
 
 optimization:
   optim_seed: 6793115
-  auto_mode: medium # light, medium, heavy
+  auto_mode: heavy # light, medium, heavy
   num_threads: 4
+  algorithm: mipro # one of: mipro, copro, gepa
 
 experiment:
-  name: agentharm_experiment
+  name: agentharm
   uri: http://127.0.0.1:5000

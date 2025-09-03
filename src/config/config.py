@@ -47,6 +47,8 @@ class OptimizationConfig:
     optim_seed: int = 6793115
     auto_mode: Literal["light", "medium", "heavy"] = "light"
     num_threads: int = 4
+    # Which optimization algorithm to use. Supported: 'mipro', 'copro', 'gepa'
+    algorithm: Literal["mipro", "copro", "gepa"] = "gepa"
 
 @dataclass(slots=True)
 class ExperimentConfig:
@@ -87,7 +89,12 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
         except Exception:
             pass
     models = ModelConfig(**models_dict)
-    optimization = OptimizationConfig(**raw["optimization"])
+    # Normalize optimization values (e.g., algorithm case)
+    optimization_dict = dict(raw["optimization"])
+    algo = optimization_dict.get("algorithm")
+    if isinstance(algo, str):
+        optimization_dict["algorithm"] = algo.lower()
+    optimization = OptimizationConfig(**optimization_dict)
     experiment = ExperimentConfig(**raw["experiment"])
 
     # data.validate()
