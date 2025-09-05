@@ -140,6 +140,10 @@ def main():
     metric_factory.log_detailed_results("eval_baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("eval_baseline", reset=True)
 
+    if config.optimization.run_optimization is False:
+        logger.info("Skipping optimization as per config.")
+        return
+
     # ---- Optimization ----
     logger.info("Optimizing agent...")
 

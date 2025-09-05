@@ -10,6 +10,7 @@ The public API now exposes:
 """
 from __future__ import annotations
 
+import logging
 import yaml
 from dataclasses import dataclass, asdict
 from typing import Literal, Sequence
@@ -49,6 +50,8 @@ class OptimizationConfig:
     num_threads: int = 4
     # Which optimization algorithm to use. Supported: 'mipro', 'copro', 'gepa'
     algorithm: Literal["mipro", "copro", "gepa"] = "gepa"
+    # Whether to run the optimization stage after baseline evaluation
+    run_optimization: bool = True
 
 @dataclass(slots=True)
 class ExperimentConfig:
@@ -69,6 +72,32 @@ class Config:
         flat.update({f"optim_{k}": v for k, v in asdict(self.optimization).items()})
         flat.update({f"exp_{k}": v for k, v in asdict(self.experiment).items()})
         return flat
+
+
+def _mask_sensitive(obj):
+    """Recursively mask common sensitive keys/values in nested structures."""
+    sensitive_keys = {"key", "token", "secret", "password", "authorization", "auth"}
+    if isinstance(obj, dict):
+        masked = {}
+        for k, v in obj.items():
+            if any(s in str(k).lower() for s in sensitive_keys):
+                masked[k] = "***"
+            else:
+                masked[k] = _mask_sensitive(v)
+        return masked
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_mask_sensitive(v) for v in obj)
+    return obj
+
+
+def _config_safe_for_logging(cfg: Config) -> dict:
+    """Return a flat config dict with sensitive fields masked for safe logging."""
+    flat = cfg.as_flat_dict()
+    # Special-case: mask any header values entirely if present
+    headers = flat.get("model_headers")
+    if isinstance(headers, dict):
+        flat["model_headers"] = {k: "***" for k in headers.keys()}
+    return _mask_sensitive(flat)
 
 def load_config(config_path: str = "src/config/config.yaml") -> Config:
     with open(config_path, "r") as file:
@@ -98,9 +127,19 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
     experiment = ExperimentConfig(**raw["experiment"])
 
     # data.validate()
-    return Config(
+    cfg = Config(
         data=data, models=models, optimization=optimization, experiment=experiment
     )
+
+    # Log the loaded configuration at INFO level (with sensitive fields masked)
+    logger = logging.getLogger(__name__)
+    try:
+        logger.info("Loaded configuration: %s", _config_safe_for_logging(cfg))
+    except Exception:
+        # Don't fail loading if logging/serialization has issues
+        logger.debug("Failed to log configuration safely", exc_info=True)
+
+    return cfg
 
 __all__ = [
     "AgentHarmDataConfig",
