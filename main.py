@@ -105,11 +105,17 @@ def main():
         refusal_judge_model=config.models.refusal_judge_model,
         semantic_judge_model=config.models.semantic_judge_model,
     )
+    if config.optimization.algorithm == "gepa":
+        metric_fn = metric_factory.metric_with_feedback
+    elif config.optimization.algorithm in ["mipro", "copro"]:
+        metric_fn = metric_factory.metric
+    else:
+        raise ValueError(f"Unknown optimization algorithm: {config.optimization.algorithm}")
 
     logger.info("Setting up evaluation...")
     evaluate = dspy.Evaluate(
         devset=devset,
-        metric=metric_factory.metric,
+        metric=metric_fn,
         num_threads=1,  # Use single thread to avoid async issues
         display_progress=True,
         display_table=0,
@@ -142,7 +148,7 @@ def main():
     if optimizer_name == "mipro":
         logger.info("Using MIPROv2 optimizer")
         optimizer = dspy.MIPROv2(
-            metric=metric_factory.metric,
+            metric=metric_fn,
             auto=config.optimization.auto_mode,
             max_bootstrapped_demos=0,
             max_labeled_demos=0,
@@ -155,7 +161,7 @@ def main():
     elif optimizer_name == "copro":
         logger.info("Using COPRO optimizer")
         optimizer = dspy.COPRO(
-            metric=metric_factory.metric,
+            metric=metric_fn,
             verbose=False,
         )
         optimized_agent = optimizer.compile(
@@ -164,7 +170,7 @@ def main():
     elif optimizer_name == "gepa":
         logger.info("Using GEPA optimizer")
         optimizer = dspy.GEPA(
-            metric=metric_factory.metric_with_feedback,  # type: ignore[arg-type]
+            metric=metric_fn,
             auto=config.optimization.auto_mode,
             num_threads=config.optimization.num_threads,
             track_stats=True,
