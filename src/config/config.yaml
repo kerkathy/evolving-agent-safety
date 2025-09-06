@@ -10,10 +10,10 @@ data:
   n_irrelevant_tools: 0
 
 models:
-  lm_name: openai/gpt-4o-mini # gpt-5-mini, gemini-2.5-flash, qwen3-8b 
-  lm_temperature: 0
+  lm_name: openai/gpt-5-mini # gpt-4o-mini, gpt-5-mini, gemini-2.5-flash, qwen3-8b 
+  lm_temperature: 1.0 # 0 for others
   seed: 42
-  max_tokens: 4096 # 20000 for 5
+  max_tokens: 20000 # 4096 for others
   refusal_judge_model:  openai/gpt-4o-2024-08-06 # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
   semantic_judge_model: openai/gpt-4o-2024-08-06 # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
   # api_base: 
@@ -23,7 +23,7 @@ models:
 
 optimization:
   optim_seed: 6793115
-  auto_mode: heavy # light, medium, heavy
+  auto_mode: medium # light, medium, heavy
   num_threads: 4
   algorithm: mipro # one of: mipro, copro, gepa
   run_optimization: true
