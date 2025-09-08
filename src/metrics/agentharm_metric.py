@@ -126,18 +126,18 @@ class AgentHarmMetricFactory:
     def _score_sync(self, example, pred, trace=None) -> dict:
         """Synchronous scoring function for DSPy compatibility."""
         grading_function_name = getattr(example, "grading_function", "")
-        self.logger.info(f"=== SCORING EXAMPLE ===")
-        self.logger.info(f"Grading function: {grading_function_name}")
+        self.logger.debug(f"=== SCORING EXAMPLE ===")
+        self.logger.debug(f"Grading function: {grading_function_name}")
         
         trajectory = getattr(pred, "trajectory", [])
-        self.logger.info(f"Trajectory has {len(trajectory)} steps")
+        self.logger.debug(f"Trajectory has {len(trajectory)} steps")
         
         # Debug: print raw trajectory
         for i, step in enumerate(trajectory):
             self.logger.debug(f"Raw trajectory step {i}: {step}")
         
         messages = trajectory_to_messages(trajectory)
-        self.logger.info(f"Converted to {len(messages)} messages")
+        self.logger.debug(f"Converted to {len(messages)} messages")
         
         # Log message structure for debugging
         for i, msg in enumerate(messages):
@@ -151,10 +151,6 @@ class AgentHarmMetricFactory:
         
         metadata = dict(getattr(example, "metadata", {}) or {})
         metadata["semantic_judge"] = self.semantic_judge_model
-        
-        # Debug: print target functions from metadata
-        target_functions = metadata.get("target_functions", [])
-        self.logger.info(f"Target functions from metadata: {target_functions}")
 
         # Capture run ID on first call
         if self._current_run_id is None and mlflow.active_run():
@@ -163,33 +159,13 @@ class AgentHarmMetricFactory:
         # Use sync grading function
         try:
             sync_grading_func = get_sync_grading_function(self.task_name, grading_function_name)
-            self.logger.info(f"Calling grading function: {grading_function_name}")
-            
-            # Enable debug logging for grading functions
-            grading_logger = logging.getLogger("grading_utils")
-            grading_logger.setLevel(logging.DEBUG)
-            
+            self.logger.debug(f"Calling grading function: {grading_function_name}")
+
             score_dict = sync_grading_func(metadata, messages)
-            self.logger.info(f"Grading result: {score_dict}")
+            self.logger.debug(f"Grading result: {score_dict}")
             task_score = float(np.mean(list(score_dict.values()))) if score_dict else 0.0
             self.logger.info(f"Task score (mean): {task_score}")
-            
-            # Debug: manually check key grading function calls for this example
-            from external.inspect_evals.src.inspect_evals.agentharm.benchmark.grading_utils import (
-                is_function_called, get_all_function_calls, get_args_of_function_call
-            )
-            
-            self.logger.info("=== MANUAL GRADING DEBUG ===")
-            all_functions = get_all_function_calls(messages)
-            self.logger.info(f"All function calls found: {all_functions}")
-            
-            for target_fn in target_functions:
-                is_called = is_function_called(messages, target_fn)
-                self.logger.info(f"is_function_called('{target_fn}'): {is_called}")
-                if is_called:
-                    args = get_args_of_function_call(messages, target_fn)
-                    self.logger.info(f"get_args_of_function_call('{target_fn}'): {args}")
-            
+
         except (AttributeError, Exception) as e:
             self.logger.warning("Failed to get grading function %s: %s", grading_function_name, e, exc_info=True)
             score_dict = {}
