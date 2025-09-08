@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import os
 import json
 import logging
 from typing import Sequence
@@ -29,13 +30,7 @@ from .interventions import generate_interventions
 from .evaluator import evaluate_variants, EvalResult
 from .effects import compute_effects
 from .optimization import optimize_instructions, OptimizationConfig
-from src.metrics import AgentHarmMetricFactory
-import dspy
-import os
-from src.utils.enhanced_dspy import create_enhanced_dspy_lm
-from src.adapter import FunctionCallAdapter
 from .eval_utils import load_eval_examples, build_agent_instruction_eval_fn
-from src.agent import WebReActAgent
 from .runtime_setup import configure_dspy, build_agent_and_metric
 
 logger = logging.getLogger(__name__)
@@ -49,6 +44,7 @@ class CausalConfig:
     param_key: str = "WebReActAgent.react.predict.signature.instructions"
     child_prefix: str = "eval_full_"
     max_prompts: int = 200  # passed as limit
+    run_is_optim: bool = True  # whether to restrict parent selection to optimization runs
     intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
     seed: int = 42
     output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
@@ -91,6 +87,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         param_key=cconf.param_key,
         child_prefix=cconf.child_prefix,
         limit=cconf.max_prompts,
+        run_is_optim=cconf.run_is_optim,
     )
     if not records:
         logger.warning("[CAUSAL] No prompts collected; aborting causal analysis.")

@@ -16,14 +16,10 @@ local `mlartifacts/` mirror. For now we rely on the tracking server.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Callable
 import hashlib
-import json
 import logging
-import os
 
 from mlflow.tracking import MlflowClient
-from mlflow.artifacts import download_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -42,65 +38,9 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def default_trace_parser(content: str) -> Iterable[PromptRecord]:
-    """Parse a trace artifact content into PromptRecord objects.
-
-    Supports JSON (list/dict) or JSONL lines. Tries to infer field names:
-      - prompt => any key containing 'prompt'
-      - output/response => key containing 'response' or 'output'
-      - score/label => key containing 'score' or 'label'
-    This is intentionally heuristic; adapt as tracing schema evolves.
-    """
-    def yield_from_obj(obj):
-        if not isinstance(obj, dict):
-            return
-        lower_keys = {k.lower(): k for k in obj.keys()}
-        # Guess prompt
-        prompt_key = next((k for lk, k in lower_keys.items() if "prompt" in lk), None)
-        output_key = next((k for lk, k in lower_keys.items() if any(x in lk for x in ("response", "output", "answer"))), None)
-        score_key = next((k for lk, k in lower_keys.items() if any(x in lk for x in ("score", "label"))), None)
-        if not prompt_key:
-            return
-        prompt_text = obj.get(prompt_key, "")
-        result_text = obj.get(output_key) if output_key else None
-        label = obj.get(score_key) if score_key else None
-        yield PromptRecord(
-            run_id="",  # Filled in by caller
-            prompt_id=_hash_text(str(prompt_text)),
-            prompt_text=str(prompt_text),
-            result_text=str(result_text) if result_text is not None else None,
-            label=float(label) if isinstance(label, (int, float)) else None,
-            raw=obj,
-        )
-
-    # Attempt JSON / JSONL parsing
-    try:
-        if "\n" in content:
-            # Try JSONL first
-            lines = [l.strip() for l in content.splitlines() if l.strip()]
-            parsed_any = False
-            for line in lines:
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                parsed_any = True
-                yield from yield_from_obj(obj)
-            if parsed_any:
-                return
-        data = json.loads(content)
-        if isinstance(data, list):
-            for item in data:
-                yield from yield_from_obj(item)
-        else:
-            yield from yield_from_obj(data)
-    except Exception:
-        logger.debug("Failed to parse trace content heuristically.", exc_info=True)
-        return
-
-
 def collect_prompts(
     experiment_name: str,
+    run_is_optim: bool,
     run_name: str | None = None,
     model_lm_name: str | None = None,
     param_key: str = "WebReActAgent.react.predict.signature.instructions",
@@ -108,11 +48,6 @@ def collect_prompts(
     limit: int | None = None,
 ) -> list[PromptRecord]:
     """Collect instruction strings as prompts from evaluation child runs.
-
-    This REPLACES the previous artifact-based prompt harvesting. Now a "prompt"
-    corresponds to the instructions parameter captured in evaluation child
-    runs (those whose runName starts with ``child_prefix``), matching the logic
-    in `test_load_artifact.py`.
 
     Parameters
     ----------
@@ -129,6 +64,10 @@ def collect_prompts(
         Child run name prefix (default ``eval_full_``) to filter evaluation runs.
     limit: int | None
         Optional cap on number of instruction prompts returned.
+    run_is_optim: bool
+        When True (default) restrict parent search to runs with
+        ``params.optim_run_optimization = 'True'``. When False, do not add this
+        filter (allow selecting non-optimization runs as parent).
 
     Returns
     -------
@@ -142,24 +81,22 @@ def collect_prompts(
         raise ValueError(f"Experiment '{experiment_name}' not found")
 
     # Identify parent run
+    # Build base filter depending on selector type
     if run_name:
-        parent_runs = client.search_runs(
-            [experiment.experiment_id],
-            filter_string=f"""
-            tags.mlflow.runName = '{run_name}'
-                AND params.optim_run_optimization = 'True'
-            """,
-        )
+        base_filter = f"tags.mlflow.runName = '{run_name}'"
     else:
         if not model_lm_name:
             raise ValueError("Either run_name or model_lm_name must be provided")
-        parent_runs = client.search_runs(
-            [experiment.experiment_id],
-            filter_string=f"""
-            params.model_lm_name = '{model_lm_name}'
-                AND params.optim_run_optimization = 'True'
-            """,
-        )
+        base_filter = f"params.model_lm_name = '{model_lm_name}'"
+
+    if run_is_optim:
+        base_filter += " AND params.optim_run_optimization = 'True'"
+
+    parent_runs = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=base_filter,
+    )
+    logger.info("Searching for parent runs with filter: %s", base_filter)
     if not parent_runs:
         raise ValueError("No matching parent run found")
     parent = parent_runs[0]
