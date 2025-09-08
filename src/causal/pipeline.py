@@ -20,6 +20,7 @@ from pathlib import Path
 import json
 import logging
 from typing import Sequence
+from datetime import datetime
 
 import mlflow
 
@@ -35,6 +36,7 @@ from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 from src.adapter import FunctionCallAdapter
 from .eval_utils import load_eval_examples, build_agent_instruction_eval_fn
 from src.agent import WebReActAgent
+from .runtime_setup import configure_dspy, build_agent_and_metric
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ class CausalConfig:
     max_prompts: int = 200  # passed as limit
     intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
     seed: int = 42
-    output_dir: str = "results/causal"
+    output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
     # Removed artifact_pattern/cache_results since prompt collection now instruction-based
     optimize: bool = False                 # If true run multi-objective optimization instead of static effects
     optimization: dict | None = None       # Nested config for OptimizationConfig
@@ -97,6 +99,12 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     for rec in records:
         logger.info("[CAUSAL] Sample prompt: %s", rec.prompt_text[:200].replace('\n', ' ') + ("..." if len(rec.prompt_text) > 200 else ""))
 
+    # Create a unique timestamped output directory for this run (both modes)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    run_out_dir = Path(f"{cconf.output_dir}_{timestamp}")
+    run_out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("[CAUSAL] Results will be written to %s", run_out_dir.resolve())
+
     if cconf.optimize:
         # Run optimization over collected instruction prompts (treat each prompt as seed candidate)
         opt_cfg_raw = cconf.optimization or {}
@@ -106,38 +114,19 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         opt_cfg = OptimizationConfig(**filtered)
         logger.info("[CAUSAL][OPT] Starting multi-objective instruction optimization over %d candidates", len(records))
         initial_texts = [r.prompt_text for r in records]
-        # --- Ensure DSPy LM is configured (was missing: caused zero eval records) ---
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not dspy.settings or not getattr(dspy.settings, "lm", None):  # type: ignore
-            if not api_key:
-                raise ValueError("[CAUSAL][OPT] OPENAI_API_KEY not set; evaluations will be skipped.")
-            else:
-                try:
-                    dspy.configure(
-                        lm=create_enhanced_dspy_lm(config.models, api_key),
-                        adapter=FunctionCallAdapter(),
-                    )
-                    logger.info("[CAUSAL][OPT] Configured DSPy LM for instruction evaluation.")
-                except Exception as e:
-                    logger.warning("[CAUSAL][OPT] Failed to configure DSPy LM: %s", e, exc_info=True)
 
-        # Build real evaluation function aligned with main.py (now modularized)
-        examples = load_eval_examples(config, limit=20)
-        metric_factory = AgentHarmMetricFactory(
-            task_name=config.data.task_name,
-            refusal_judge_model=config.models.refusal_judge_model,
-            semantic_judge_model=config.models.semantic_judge_model,
-        )
-        # Initialize a single reusable agent instance; its instruction will be
-        # updated in-place for each candidate inside the eval function to avoid
-        # repeated instantiation overhead.
-        reusable_agent = WebReActAgent()
-        eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=reusable_agent)
-        opt_result = optimize_instructions(initial_texts, eval_fn=eval_fn, config=opt_cfg)
+        # Configure runtime (DSPy + agent + metric)
+        api_key = os.getenv("OPENAI_API_KEY") or ""
+        configure_dspy(config.models, api_key)
+        agent, metric_factory = build_agent_and_metric(config)
+
+        # Load examples (must be non-empty now)
+        examples = load_eval_examples(config)
         if not examples:
-            logger.warning("[CAUSAL][OPT] No eval examples loaded; completion/refusal metrics will remain zero.")
-        out_dir = Path(cconf.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
+            raise ValueError("[CAUSAL][OPT] No evaluation examples loaded; cannot proceed with optimization.")
+        eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=agent)
+        opt_result = optimize_instructions(initial_texts, eval_fn=eval_fn, config=opt_cfg)
+        out_dir = run_out_dir
         frontier_json = [
             {
                 "text": c.text,
@@ -173,10 +162,6 @@ def run_causal_analysis(config, experiment_name: str) -> None:
             json.dump(summary, f, indent=2)
         logger.info("[CAUSAL][OPT] Summary: %s", summary)
         logger.info("[CAUSAL][OPT] Results written to %s", out_dir.resolve())
-        # try:
-        #     mlflow.log_artifacts(str(out_dir), artifact_path="causal_analysis")
-        # except Exception:
-        #     logger.debug("[CAUSAL][OPT] Failed logging artifacts to MLflow", exc_info=True)
         logger.info("[CAUSAL][OPT] Finished optimization: frontier=%d evals=%d", len(opt_result.frontier), opt_result.evaluations)
     else:
         results: list[EvalResult] = []
@@ -193,8 +178,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
             results.extend(evals)
 
         effects = compute_effects(results)
-        out_dir = Path(cconf.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = run_out_dir
         effects_json = [asdict(e) for e in effects]
         with open(out_dir / "prompt_effects.json", "w") as f:
             json.dump(effects_json, f, indent=2)

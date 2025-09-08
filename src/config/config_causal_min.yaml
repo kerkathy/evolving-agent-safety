@@ -57,3 +57,4 @@ causal:
     target_completion: 1.0
     target_refusal: 1.0
     max_candidates_evaluated: 10 # Cap total evaluations (frontier + mutations)
+    max_eval_samples: 5      # Evaluate on fewer samples for speed
