@@ -37,11 +37,48 @@ class ToolSelectionSignature(dspy.Signature):
 
 
 class WebReActAgent(dspy.Module):
-    def __init__(self, max_steps=6):
+    def __init__(self, max_steps=6, custom_instruction=None):
         logger.debug("Entered WebReActAgent.__init__")
         self.max_steps = max_steps
-        self.react = dspy.ChainOfThought(ToolSelectionSignature)
 
+        # Create a dynamic signature class with custom instruction
+        if custom_instruction:
+            # Create a new signature class with the custom instruction
+            DynamicSignature = type(
+                'DynamicToolSelectionSignature',
+                (dspy.Signature,),
+                {
+                    '__doc__': custom_instruction,
+                    'question': dspy.InputField(),
+                    'trajectory': dspy.InputField(),  
+                    'functions': dspy.InputField(),
+                    'reasoning': dspy.OutputField(),
+                    'next_selected_fn': dspy.OutputField(),
+                    'args': dspy.OutputField(desc="Dict[str, Any]")
+                }
+            )
+            self.react = dspy.ChainOfThought(DynamicSignature)
+        else:
+            # Use the default signature
+            self.react = dspy.ChainOfThought(ToolSelectionSignature)
+
+    def update_instruction(self, new_instruction):
+        """Update the instruction after initialization."""
+        DynamicSignature = type(
+            'DynamicToolSelectionSignature',
+            (dspy.Signature,),
+            {
+                '__doc__': new_instruction,
+                'question': dspy.InputField(),
+                'trajectory': dspy.InputField(),  
+                'functions': dspy.InputField(),
+                'reasoning': dspy.OutputField(),
+                'next_selected_fn': dspy.OutputField(),
+                'args': dspy.OutputField(desc="Dict[str, Any]")
+            }
+        )
+        self.react = dspy.ChainOfThought(DynamicSignature)
+    
     def forward(self, question, functions):
         logger.debug("Entered WebReActAgent.forward")
         # Convert functions dict to metadata format for tool selection
