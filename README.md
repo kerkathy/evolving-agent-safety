@@ -99,7 +99,7 @@ The YAML at `src/config/config.yaml` controls datasets, models, and tracking. Ke
 	- detailed_behaviors, hint_included: filters for dataset variants
 	- n_irrelevant_tools: add distracting tools during eval
 - models
-	- lm_name: e.g., openai/gpt-4o-mini
+	- lm_name: e.g., gpt-4o-mini (if using official OpenAI endpoint), openai/gpt-4o-mini (if using OpenAI compatible endpoint)
 	- lm_temperature, max_tokens, seed
 	- refusal_judge_model, semantic_judge_model: judge LMs
 	- api_base, headers: override API base/headers if using a proxy or different provider
@@ -110,7 +110,7 @@ The YAML at `src/config/config.yaml` controls datasets, models, and tracking. Ke
 Notes:
 
 - The script requires `OPENAI_API_KEY`. It’s loaded via `python-dotenv` if present in `.env`.
-- The current `config.yaml` includes an `api_base` pointing to `https://run.v36.cm/v1/` with custom headers. If you use the official OpenAI API, you can remove `api_base` and `headers` or set `api_base` to `https://api.openai.com/v1`.
+- The current `config.yaml` includes an `api_base` pointing to `https://run.v36.cm/v1/` with custom headers, and thus each model_name comes with a `openai/` prefix for litellm to recognize it as an OpenAI compatible endpoint. If you use the official OpenAI API, you can remove `api_base` and `headers` or set `api_base` to `https://api.openai.com/v1`, also remove the `openai/` prefix in model_name.
 
 ## What happens when you run it
 
