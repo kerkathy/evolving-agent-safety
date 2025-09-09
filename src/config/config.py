@@ -63,7 +63,7 @@ class CausalOptimizationConfig:
     """Nested optimization settings specific to causal instruction search.
 
     Distinct from top-level OptimizationConfig used in baseline/batch runs.
-    Includes evaluation sampling controls (e.g., max_eval_samples) and
+    Includes evaluation sampling controls (e.g., train_data_size) and
     mutation / segmentation model configuration.
     """
     population_size: int = 16
@@ -72,7 +72,7 @@ class CausalOptimizationConfig:
     target_completion: float = 1.0
     target_refusal: float = 1.0
     max_candidates_evaluated: int | None = 500
-    max_eval_samples: int = 10          # How many dataset examples to use per candidate evaluation
+    train_data_size: int = 10          # How many dataset examples to use per candidate evaluation
     segmentation_model: str = "openai/gpt-4o-mini"
     openai_api_base: str = "https://api.openai.com/v1"
 
@@ -81,8 +81,8 @@ class CausalOptimizationConfig:
             self.population_size = 1
         if self.max_generations <= 0:
             self.max_generations = 1
-        if self.max_eval_samples <= 0:
-            self.max_eval_samples = 1
+        if self.train_data_size <= 0:
+            self.train_data_size = 1
 
 @dataclass(slots=True)
 class CausalConfig:
@@ -91,8 +91,7 @@ class CausalConfig:
     model_lm_name: str | None = None    # alternative selector if parent_run_name absent
     param_key: str = "WebReActAgent.react.predict.signature.instructions"
     child_prefix: str = "eval_full_"
-    max_prompts: int = 200  # passed as limit
-    run_is_optim: bool = True  # whether to restrict parent selection to optimization runs
+    max_collected_prompts: int = 200  # passed as limit
     intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
     seed: int = 42
     output_dir: str = "results/causal"  # base directory; timestamped subdir created per run

@@ -37,7 +37,7 @@ class Candidate:
     completion: float
     meta: dict = field(default_factory=dict)
 
-    def key(self) -> str:
+    def hash(self) -> str:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ def pareto_frontier(cands: Sequence[Candidate]) -> list[Candidate]:
             del front[i]
         front.append(c)
     # Stable sort for reproducibility (descending metrics, then hash)
-    front.sort(key=lambda x: (-x.refusal, -x.completion, x.key()))
+    front.sort(key=lambda x: (-x.refusal, -x.completion, x.hash()))
     return front
 
 
@@ -150,16 +150,16 @@ def optimize_instructions(
     low_info_alternatives: Dict[str, str] = {
         "metadata_context": "",
         "system_role": "You are an AI assistant.",
-        "explicit_constraints": "Follow instructions responsibly.",
-        "examples_demos": "(Examples omitted)",
+        "explicit_constraints": "Follow instructions.",
+        "examples_demos": "",
         "format_specifiers": "Provide a clear answer.",
-        "temperature_verbosity_hints": "Be concise and neutral.",
-        "full": "Instruction.",
+        "temperature_verbosity_hints": "Be neutral.",
     }
+    intervention_keys = list(low_info_alternatives.keys())
 
     SEGMENT_PROMPT_TEMPLATE = (
-        "Segment the instruction below into several semantically-meaningful chunks: metadata_context, system_role, explicit_constraints, examples_demos, format_specifiers, temperature_verbosity_hints.\n"
-        "Output a dictionary only. Keys MUST be the segment names. Value: corresponding text.\n\n"
+        f"Segment the instruction below into several semantically-meaningful chunks: {', '.join(intervention_keys)}.\n"
+        "Output a dictionary in JSON code block ONLY. Keys MUST be the segment names.\n\n"
         "Instruction to be segmented:\n{instruction}"
     )
 
@@ -190,7 +190,7 @@ def optimize_instructions(
         if lm is None:
             raise ValueError(f"No LM available for model '{cfg.segmentation_model}'")
         try:
-            return str(lm(prompt)).strip()
+            return str(lm(prompt)[0]).strip()
         except Exception as e:  # noqa: BLE001
             logger.warning("[OPT] dspy.LM call failed: %s", e)
             return ""
@@ -199,10 +199,13 @@ def optimize_instructions(
         text = raw_text.strip()
         if not text:
             return {}
-        # Strip code fences
-        if text.startswith("```") and text.endswith("```"):
+        # Parse out code block if present
+        if "```json" in text:
+            text = text.split("```json", 1)[-1]
             text = text.strip("`").strip()
-        # JSON first
+        elif text.startswith("```") and text.endswith("```"):
+            text = text.strip("`").strip()
+        # Parse JSON 
         try:
             parsed = json.loads(text)
             if isinstance(parsed, dict):
@@ -228,17 +231,10 @@ def optimize_instructions(
             mapping = _parse_segments(raw)
             expected_any = any(
                 key in mapping
-                for key in (
-                    "metadata_context",
-                    "system_role",
-                    "explicit_constraints",
-                    "examples_demos",
-                    "format_specifiers",
-                    "temperature_verbosity_hints",
-                )
+                for key in intervention_keys
             )
             if not expected_any:
-                mapping = {"full": instr}
+                logger.warning("[OPT] No expected keys found in segmentation output: %s", raw)
         except Exception as e:  # noqa: BLE001
             logger.warning("[OPT] Segmentation failed (%s); using fallback.", e)
             mapping = {"full": instr}
@@ -246,7 +242,7 @@ def optimize_instructions(
         segments_cache[k] = mapping if mapping else {"full": instr}
         return segments_cache[k]
 
-    # Mutation spec: dict with keys text, segment_key, mutation_kind, target (completion|safety), parent_key
+    # Mutation spec: dict with keys text, intervention_key, mutation_kind, parent_hash
 
     def sufficiency_mutations(parent: Candidate) -> list[dict[str, Any]]:
         """Generate mutations attempting to enhance completion OR safety for each segment.
@@ -266,19 +262,25 @@ def optimize_instructions(
                 )
                 prompt = (
                     f"You are optimizing ONE segment ('{key}') of an instruction. {intent_desc}.\n"
-                    "Keep all OTHER segments identical. Reconstruct the full instruction. Return ONLY the full instruction (plain text).\n"
+                    "Keep all OTHER segments identical. Return a json object with the same keys.\n"
                     f"Current segments (JSON):\n{segs_json}\n"
                 )
                 try:
-                    candidate_text = llm_call(prompt).strip()
+                    raw = llm_call(prompt)
+                    segs_new = _parse_segments(raw)
+                    # If parsing failed, fall back to treating raw as plain text (legacy behavior)
+                    if segs_new:
+                        candidate_text = " ".join(v for v in segs_new.values() if v).strip()
+                    else:
+                        candidate_text = raw
                     if candidate_text and candidate_text != parent.text and len(candidate_text.split()) > 3:
                         out.append({
                             "text": candidate_text,
-                            "segment_key": key,
-                            "mutation_kind": "sufficiency_improve",
-                            "target": target,
-                            "parent_key": parent.key(),
+                            "intervention_key": key,
+                            "mutation_kind": f"sufficiency_improve_{target}",
+                            "parent_hash": parent.hash(),
                         })
+                        logger.info("[OPT] Sufficiency mutation generated for segment '%s' targeting %s: %s", key, target, candidate_text)
                 except Exception as e:  # noqa: BLE001
                     logger.debug("[OPT] Sufficiency mutation failed: %s", e)
         return out
@@ -293,29 +295,24 @@ def optimize_instructions(
         """
         segs = segment_instruction(parent.text)
         out: list[dict[str, Any]] = []
-        for key, value in segs.items():
-            target_completion = any(tok in key for tok in ["constraint", "format", "example", "examples", "demos"])
-            removed_segs = segs.copy()
-            removed_segs[key] = ""
-            removed_text = " ".join(v for v in removed_segs.values() if v)
+        for key in segs.keys():
+            removed_text = " ".join(v for k, v in segs.items() if k != key and v)
             if removed_text and removed_text != parent.text and len(removed_text.split()) > 3:
                 out.append({
                     "text": removed_text,
-                    "segment_key": key,
+                    "intervention_key": key,
                     "mutation_kind": "necessity_remove",
-                    "target": "completion" if target_completion else "safety",
-                    "parent_key": parent.key(),
+                    "parent_hash": parent.hash(),
                 })
             lowinfo_segs = segs.copy()
-            lowinfo_segs[key] = low_info_alternatives.get(key, "(omitted)")
+            lowinfo_segs[key] = low_info_alternatives.get(key, "")
             lowinfo_text = " ".join(v for v in lowinfo_segs.values() if v)
             if lowinfo_text and lowinfo_text != parent.text and len(lowinfo_text.split()) > 3:
                 out.append({
                     "text": lowinfo_text,
-                    "segment_key": key,
+                    "intervention_key": key,
                     "mutation_kind": "necessity_lowinfo",
-                    "target": "completion" if target_completion else "safety",
-                    "parent_key": parent.key(),
+                    "parent_hash": parent.hash(),
                 })
         return out
 
@@ -326,13 +323,13 @@ def optimize_instructions(
     frontier = pareto_frontier(population)
     num_evaluations = len(population)
 
-    def _update_effects(segment_key: str, parent: Candidate, child: Candidate):
-        rec = segment_effect_sums.setdefault(segment_key, {"count": 0.0, "delta_refusal_sum": 0.0, "delta_completion_sum": 0.0})
+    def _update_effects(intervention_key: str, parent: Candidate, child: Candidate):
+        rec = segment_effect_sums.setdefault(intervention_key, {"count": 0.0, "effect_on_refusal_sum": 0.0, "effect_on_completion_sum": 0.0})
         rec["count"] += 1.0
-        rec["delta_refusal_sum"] += child.refusal - parent.refusal
-        rec["delta_completion_sum"] += child.completion - parent.completion
+        rec["effect_on_refusal_sum"] += child.refusal - parent.refusal
+        rec["effect_on_completion_sum"] += child.completion - parent.completion
 
-    def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None, parent: Candidate | None = None):
+    def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None):
         k = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
         if k in seen_cache:
             return None
@@ -355,10 +352,11 @@ def optimize_instructions(
     for gen in tqdm(range(1, cfg.max_generations + 1), desc="Generations", unit="gen"):
         # Generate mutations from frontier
         for parent_cand in tqdm(list(frontier), desc=f"Gen {gen} Candidates", unit="cand"):
+            logger.info("[OPT] Gen %d: processing candidate r=%.2f c=%.2f text=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.text)
             # Ensure segments cached
             segment_instruction(parent_cand.text)
 
-            logger.info("[OPT] Gen %d: mutating candidate r=%.2f c=%.2f key=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.key())
+            logger.info("[OPT] Gen %d: mutating candidate r=%.2f c=%.2f key=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.hash())
 
             # Generate mutations
             new_specs: list[Dict[str, Any]] = []
@@ -379,10 +377,10 @@ def optimize_instructions(
                 child_cand = score_and_register_candidate(
                     spec["text"], 
                     f"gen{gen}", 
-                    mutation_meta={k: v for k, v in spec.items() if k != "text"}, parent=parent_cand
+                    mutation_meta={k: v for k, v in spec.items() if k != "text"}
                 )
-                if child_cand and spec.get("segment_key") and parent_cand:
-                    _update_effects(spec["segment_key"], parent_cand, child_cand)
+                if child_cand and spec.get("intervention_key") and parent_cand:
+                    _update_effects(spec["intervention_key"], parent_cand, child_cand)
                 num_evaluations += 1
 
         population = list(seen_cache.values())
@@ -406,8 +404,8 @@ def optimize_instructions(
         count = rec.get("count", 0.0) or 1.0
         segment_effects[key] = {
             "count": rec.get("count", 0.0),
-            "avg_delta_refusal": rec.get("delta_refusal_sum", 0.0) / count,
-            "avg_delta_completion": rec.get("delta_completion_sum", 0.0) / count,
+            "avg_effect_on_refusal": rec.get("effect_on_refusal_sum", 0.0) / count,
+            "avg_effect_on_completion": rec.get("effect_on_completion_sum", 0.0) / count,
         }
 
     return OptimizationResult(

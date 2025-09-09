@@ -30,7 +30,7 @@ def load_eval_examples(config):
     if not (load_agentharm_data and build_dspy_examples):  # import failure
         logger.warning("[EVAL] Data loading modules unavailable; using heuristic eval only.")
         return []
-    limit = config.causal.optimization.max_eval_samples
+    limit = config.causal.optimization.train_data_size
     try:
         data_cfg = config.data
         raw = load_agentharm_data(

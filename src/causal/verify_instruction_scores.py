@@ -198,7 +198,6 @@ def verify_scores(
     abs_tol: float,
     rel_tol: float,
     allow_drift: bool,
-    run_is_optim: bool,
 ) -> dict:
     client = MlflowClient()
     experiment = client.get_experiment_by_name(experiment_name)
@@ -254,7 +253,6 @@ def verify_scores(
         model_lm_name=model_lm_name,
         param_key=param_key,
         child_prefix=child_prefix,
-        run_is_optim=run_is_optim,
     )
     logger.info("Collected %d unique instruction prompts for verification", len(prompts))
 
@@ -359,7 +357,6 @@ def main(argv: list[str] | None = None) -> int:
         abs_tol=args.abs_tol,
         rel_tol=args.rel_tol,
         allow_drift=args.allow_drift,
-        run_is_optim=args.run_is_optim,
     )
     if args.json_out:
         with open(args.json_out, "w") as f:

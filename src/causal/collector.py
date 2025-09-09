@@ -40,7 +40,6 @@ def _hash_text(text: str) -> str:
 
 def collect_prompts(
     experiment_name: str,
-    run_is_optim: bool,
     run_name: str | None = None,
     model_lm_name: str | None = None,
     param_key: str = "WebReActAgent.react.predict.signature.instructions",
@@ -64,10 +63,6 @@ def collect_prompts(
         Child run name prefix (default ``eval_full_``) to filter evaluation runs.
     limit: int | None
         Optional cap on number of instruction prompts returned.
-    run_is_optim: bool
-        When True (default) restrict parent search to runs with
-        ``params.optim_run_optimization = 'True'``. When False, do not add this
-        filter (allow selecting non-optimization runs as parent).
 
     Returns
     -------
@@ -88,9 +83,6 @@ def collect_prompts(
         if not model_lm_name:
             raise ValueError("Either run_name or model_lm_name must be provided")
         base_filter = f"params.model_lm_name = '{model_lm_name}'"
-
-    # if run_is_optim:
-    #     base_filter += " AND params.optim_run_optimization = 'True'"
 
     parent_runs = client.search_runs(
         [experiment.experiment_id],

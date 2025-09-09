@@ -40,11 +40,10 @@ causal:
   # Either set run_name OR model_lm_name (kept from minimal config)
   run_name: 
   model_lm_name: openai/gpt-4o-mini
-  run_is_optim: true
   param_key: "WebReActAgent.react.predict.signature.instructions"
   child_prefix: "eval_full_"
   # Increase prompt budget for broader seed set for optimization
-  max_prompts: 10
+  max_collected_prompts: 10
   # Intervention types are ignored in pure optimization mode, but kept for parity
   intervention_types: ["drop_instruction", "shuffle_order", "mask_step", "replace_tool_hint"]
   seed: 42
@@ -57,6 +56,6 @@ causal:
     target_completion: 1.0
     target_refusal: 1.0
     max_candidates_evaluated: 10 # Cap total evaluations (frontier + mutations)
-    max_eval_samples: 5      # Evaluate on fewer samples for speed
+    train_data_size: 5      # Train set size for fitness eval
     segmentation_model: openai/gpt-4o-mini # Which model to use for segmentation & mutations
     openai_api_base: https://run.v36.cm/v1/

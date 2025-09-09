@@ -20,7 +20,6 @@ from pathlib import Path
 import os
 import json
 import logging
-from typing import Sequence
 from datetime import datetime
 
 import mlflow
@@ -40,7 +39,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         logger.info("Causal analysis disabled; skipping.")
         return
 
-    logger.info("[CAUSAL] Collecting instruction prompts (max=%s)...", cconf.max_prompts)
+    logger.info("[CAUSAL] Collecting instruction prompts (max=%s)...", cconf.max_collected_prompts)
     if not (cconf.run_name or cconf.model_lm_name):
         logger.warning("[CAUSAL] Neither run_name nor model_lm_name provided; prompt collection will likely fail.")
     records: list[PromptRecord] = collect_prompts(
@@ -49,8 +48,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         model_lm_name=cconf.model_lm_name,
         param_key=cconf.param_key,
         child_prefix=cconf.child_prefix,
-        limit=cconf.max_prompts,
-        run_is_optim=cconf.run_is_optim,
+        limit=cconf.max_collected_prompts,
     )
     if not records:
         logger.warning("[CAUSAL] No prompts collected; aborting causal analysis.")
@@ -123,6 +121,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         "frontier_size": len(opt_result.frontier),
         "config": asdict(cconf),
         "optimization_config": asdict(opt_cfg),
+        "segment_effects": opt_result.segment_effects,  # Added segment effects
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
