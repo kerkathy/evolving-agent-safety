@@ -26,8 +26,8 @@ import mlflow
 
 from .collector import collect_prompts, PromptRecord
 from .optimization import optimize_instructions
-from .eval_utils import load_eval_examples, build_agent_instruction_eval_fn
-from .runtime_setup import configure_dspy, build_agent_and_metric
+from .eval_utils import load_eval_examples, build_dual_agent_instruction_eval_fn
+from .runtime_setup import configure_dspy, build_agent_and_dual_metric
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +72,18 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     # Configure runtime (DSPy + agent + metric)
     api_key = os.getenv("OPENAI_API_KEY") or ""
     main_lm = configure_dspy(config.models, api_key)
-    agent, metric_factory = build_agent_and_metric(config)
+    agent, benign_metric_factory, harmful_metric_factory = build_agent_and_dual_metric(config)
 
-    # Load examples
-    examples = load_eval_examples(config)
-    if not examples:
-        raise ValueError("[CAUSAL][OPT] No evaluation examples loaded; cannot proceed with optimization.")
-    eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=agent)
+    # Load examples (separate benign/harmful)
+    examples_by_task = load_eval_examples(config)
+    if not examples_by_task.get("benign") or not examples_by_task.get("harmful"):
+        raise ValueError("[CAUSAL][OPT] Missing benign or harmful examples; cannot proceed with dual-metric optimization.")
+    eval_fn = build_dual_agent_instruction_eval_fn(
+        examples_by_task,
+        benign_metric_factory=benign_metric_factory,
+        harmful_metric_factory=harmful_metric_factory,
+        agent=agent,
+    )
     opt_result = optimize_instructions(initial_texts, main_lm=main_lm, eval_fn=eval_fn, config=cconf.optimization)
     out_dir = run_out_dir
     frontier_json = [
@@ -87,6 +92,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
             "refusal": c.refusal,
             "completion": c.completion,
             "meta": c.meta,
+            "hash": c.hash(),
         }
         for c in opt_result.frontier
     ]
@@ -96,6 +102,7 @@ def run_causal_analysis(config, experiment_name: str) -> None:
             "refusal": c.refusal,
             "completion": c.completion,
             "meta": c.meta,
+            "hash": c.hash(),
         }
         for c in opt_result.population
     ]

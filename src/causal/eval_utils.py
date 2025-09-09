@@ -6,7 +6,7 @@ readable. We avoid external numeric deps (numpy) by using pure Python stats.
 """
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Iterable, List, Dict, Tuple
 import logging
 
 from src.agent import WebReActAgent
@@ -22,102 +22,125 @@ except Exception:  # pragma: no cover - defensive
     build_dspy_examples = None  # type: ignore
 
 
-def load_eval_examples(config):
-    """Load a lightweight slice of AgentHarm examples for instruction eval.
+def load_eval_examples(config) -> Dict[str, List]:
+    """Load separate benign + harmful example slices for dual-metric eval.
 
-    Falls back to empty list (triggering heuristic scoring) if anything fails.
+    Returns a dict with keys:
+      - "benign": examples used to compute completion/task_score
+      - "harmful": examples used to compute refusal metric
+
+    Any failure results in empty lists for the affected key.
     """
+    out: Dict[str, List] = {"benign": [], "harmful": []}
     if not (load_agentharm_data and build_dspy_examples):  # import failure
         logger.warning("[EVAL] Data loading modules unavailable; using heuristic eval only.")
-        return []
+        return out
     limit = config.causal.optimization.train_data_size
-    try:
-        data_cfg = config.data
-        raw = load_agentharm_data(
-            behavior_ids=list(data_cfg.behavior_ids or []),
-            sample_ids=(list(data_cfg.sample_ids or [])[:limit] or None),
-            task_name=data_cfg.task_name,
-            split=data_cfg.split,
-            detailed_behaviors=data_cfg.detailed_behaviors,
-            hint_included=data_cfg.hint_included,
-            n_irrelevant_tools=data_cfg.n_irrelevant_tools,
-        )
+    data_cfg = config.data
+
+    common_kwargs = dict(
+        behavior_ids=list(getattr(data_cfg, "behavior_ids", []) or []),
+        sample_ids=None,  # handle limit after building examples
+        split=getattr(data_cfg, "split", "val"),
+        detailed_behaviors=getattr(data_cfg, "detailed_behaviors", True),
+        hint_included=getattr(data_cfg, "hint_included", False),
+        n_irrelevant_tools=getattr(data_cfg, "n_irrelevant_tools", 0),
+    )
+
+    for task_name in ("benign", "harmful"):
+        raw = load_agentharm_data(task_name=task_name, **common_kwargs)  # type: ignore[arg-type]
         examples = build_dspy_examples(raw)
         if len(examples) > limit:
             examples = examples[:limit]
-        logger.info("[EVAL] Loaded %d eval examples (limit=%d)", len(examples), limit)
-        return examples
-    except Exception as e:  # pragma: no cover - runtime resilience
-        logger.warning("[EVAL] Failed to load eval examples: %s", e, exc_info=True)
-        return []
+        out[task_name] = examples
+        logger.info(
+            "[EVAL] Loaded %d %s eval examples (limit=%d)", len(examples), task_name, limit
+        )
+    return out
 
 
-def build_agent_instruction_eval_fn(
-    examples: Iterable,
-    metric_factory: AgentHarmMetricFactory,
+def build_dual_agent_instruction_eval_fn(
+    examples_by_task: Dict[str, List],
+    benign_metric_factory: AgentHarmMetricFactory,
+    harmful_metric_factory: AgentHarmMetricFactory,
     agent: WebReActAgent,
 ):
-    """Return callable(instr) -> (refusal_mean, completion_mean, extra_meta).
+    """Return callable(instr) -> (refusal_mean, completion_mean, extra_meta) using dual datasets.
 
-    Simplified: no internal agent instantiation & no heuristic fallback.
-    Caller MUST supply:
-      * non-empty iterable of evaluation examples
-      * a configured metric_factory (state will be reset each call)
-      * a pre-built agent instance whose instruction will be mutated in-place
+    Logic:
+      * completion_mean: average task_score over BENIGN examples (no refusal aggregation here)
+      * refusal_mean: average refusal over HARMFUL examples (task_score ignored for objective)
 
-    Raises:
-        ValueError: if examples is empty.
-        RuntimeError: if evaluation fails unexpectedly.
+    We run two independent evaluation passes per candidate instruction to keep
+    factory state isolated and reduce cross-contamination of records.
     """
-    examples_list: List = list(examples)
-    if not examples_list:
-        raise ValueError("build_agent_instruction_eval_fn received 0 examples; provide at least one for evaluation.")
+    benign_examples = list(examples_by_task["benign"])
+    harmful_examples = list(examples_by_task["harmful"])
+    if not benign_examples:
+        raise ValueError("Dual eval requires at least one benign example for completion metric.")
+    if not harmful_examples:
+        raise ValueError("Dual eval requires at least one harmful example for refusal metric.")
 
-    evaluator = dspy.Evaluate(
-        devset=examples_list,
-        metric=metric_factory.metric,
+    benign_eval = dspy.Evaluate(
+        devset=benign_examples,
+        metric=benign_metric_factory.metric,
         num_threads=1,
         display_progress=False,
         display_table=0,
         max_errors=999,
         provide_traceback=False,
     )
-    for idx, ex in enumerate(examples_list):  # dataset traceability
-        q = getattr(ex, "question", "")
-        logger.info("[EVAL][DATA] Example %d len=%d preview=%s", idx, len(q), q[:140].replace('\n', ' '))
+    harmful_eval = dspy.Evaluate(
+        devset=harmful_examples,
+        metric=harmful_metric_factory.metric,
+        num_threads=1,
+        display_progress=False,
+        display_table=0,
+        max_errors=999,
+        provide_traceback=False,
+    )
 
-    def _mean(values):
+    def _mean(values: List[float]) -> float:
         return (sum(values) / len(values)) if values else 0.0
 
-    def _eval(instr: str):
-        metric_factory.reset()  # ensure clean state per candidate
+    def _eval(instr: str) -> Tuple[float, float, Dict[str, int]]:
         agent.update_instruction(instr)
-        instr_hash = hash(instr)
         logger.info(
-            "[EVAL] Evaluating candidate instruction hash=%s len=%d preview=%s", instr_hash, len(instr), instr[:160].replace('\n', ' ')
+            "[EVAL][DUAL] Evaluating instruction (len=%d) benign_n=%d harmful_n=%d", len(instr), len(benign_examples), len(harmful_examples)
         )
-        logger.info("[EVAL] Devset size=%d", len(examples_list))
+
+        # --- Completion (benign) pass ---
+        benign_metric_factory.reset()
         try:
-            evaluator(agent)
-        except Exception as run_err:  # pragma: no cover
-            logger.exception("[EVAL] Evaluation failure")
-            raise RuntimeError(f"Evaluation failed: {run_err}") from run_err
+            benign_eval(agent)
+        except Exception as e:  # pragma: no cover
+            logger.exception("[EVAL][DUAL] Benign evaluation failed")
+            raise RuntimeError(f"Benign evaluation failed: {e}") from e
+        benign_records = list(getattr(benign_metric_factory, "_records", []))  # type: ignore[attr-defined]
+        completion_scores = [r.get("task_score", 0.0) for r in benign_records]
+        completion_mean = float(_mean(completion_scores))
+        benign_metric_factory.reset()
 
-        records = list(getattr(metric_factory, "_records", []))  # type: ignore[attr-defined]
-        task_scores = [r.get("task_score", 0.0) for r in records]
-        refusals = [r.get("refusal", 0.0) for r in records]
-        completion_mean = float(_mean(task_scores))
-        refusal_mean = float(_mean(refusals))
+        # --- Refusal (harmful) pass ---
+        harmful_metric_factory.reset()
+        try:
+            harmful_eval(agent)
+        except Exception as e:  # pragma: no cover
+            logger.exception("[EVAL][DUAL] Harmful evaluation failed")
+            raise RuntimeError(f"Harmful evaluation failed: {e}") from e
+        harmful_records = list(getattr(harmful_metric_factory, "_records", []))  # type: ignore[attr-defined]
+        refusal_flags = [r.get("refusal", 0.0) for r in harmful_records]
+        refusal_mean = float(_mean(refusal_flags))
+        harmful_metric_factory.reset()
 
-        for i, r in enumerate(records):
-            logger.info(
-                "[EVAL][REC] #%d task_score=%.3f refusal=%.3f grading_fn=%s", i, r.get("task_score", 0.0), r.get("refusal", 0.0), r.get("grading_function")
-            )
-        extra = {"n_examples": len(task_scores), "source": "agent_metric_evaluate"}
         logger.info(
-            "[EVAL] Candidate summary: refusal=%.3f completion=%.3f n=%d", refusal_mean, completion_mean, len(task_scores)
+            "[EVAL][DUAL] Summary: refusal(harmful)=%.3f completion(benign)=%.3f", refusal_mean, completion_mean
         )
-        metric_factory.reset()  # leave factory clean for caller's next use
+        extra = {
+            "n_benign": len(completion_scores),
+            "n_harmful": len(refusal_flags),
+            "source": "dual_agent_metric_evaluate",
+        }
         return refusal_mean, completion_mean, extra
 
     return _eval
@@ -125,5 +148,5 @@ def build_agent_instruction_eval_fn(
 
 __all__ = [
     "load_eval_examples",
-    "build_agent_instruction_eval_fn",
+    "build_dual_agent_instruction_eval_fn",
 ]

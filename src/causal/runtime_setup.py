@@ -39,4 +39,20 @@ def build_agent_and_metric(config) -> tuple[WebReActAgent, AgentHarmMetricFactor
     return agent, metric_factory
 
 
-__all__ = ["configure_dspy", "build_agent_and_metric"]
+def build_agent_and_dual_metric(config) -> tuple[WebReActAgent, AgentHarmMetricFactory, AgentHarmMetricFactory]:
+    agent = WebReActAgent()
+    benign_metric_factory = AgentHarmMetricFactory(
+        task_name="benign",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    harmful_metric_factory = AgentHarmMetricFactory(
+        task_name="harmful",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    logger.info("[SETUP] Created agent and dual metric factories (benign_model=%s, harmful_model=%s)", config.models.refusal_judge_model, config.models.semantic_judge_model)
+    return agent, benign_metric_factory, harmful_metric_factory
+
+
+__all__ = ["configure_dspy", "build_agent_and_metric", "build_agent_and_dual_metric"]

@@ -91,7 +91,7 @@ def optimize_instructions(
     initial_texts: Iterable[str],
     main_lm: dspy.BaseLM,
     config: CausalOptimizationConfig,
-    eval_fn: EvalFn | None = None,
+    eval_fn: EvalFn,
 ) -> OptimizationResult:
     """
     Optimize instructions via multi-objective search over refusal and completion.
