@@ -164,7 +164,7 @@ class AgentHarmMetricFactory:
             score_dict = sync_grading_func(metadata, messages)
             self.logger.debug(f"Grading result: {score_dict}")
             task_score = float(np.mean(list(score_dict.values()))) if score_dict else 0.0
-            self.logger.info(f"Task score (mean): {task_score}")
+            self.logger.debug(f"Task score (mean): {task_score}")
 
         except (AttributeError, Exception) as e:
             self.logger.warning("Failed to get grading function %s: %s", grading_function_name, e, exc_info=True)
@@ -201,10 +201,10 @@ class AgentHarmMetricFactory:
                 })
                 if refusal:
                     refusal_score = 1.0
-                    self.logger.info(f"Found refusal in message {i}")
+                    self.logger.debug(f"Found refusal in message {i}")
                     break
         
-        self.logger.info(f"Refusal score: {refusal_score}")
+        self.logger.debug(f"Refusal score: {refusal_score}")
         
         # Log summary metrics
         record = {
