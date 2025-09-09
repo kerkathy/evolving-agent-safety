@@ -26,7 +26,12 @@ import mlflow
 
 from .collector import collect_prompts, PromptRecord
 from .optimization import optimize_instructions
-from .eval_utils import load_eval_examples, build_dual_agent_instruction_eval_fn
+from .eval_utils import (
+    load_eval_examples,
+    build_full_eval_fn,
+    build_minibatch_dual_agent_instruction_eval_fn,
+)
+from src.metrics import AgentHarmMetricFactory
 from .runtime_setup import configure_dspy, build_agent_and_dual_metric
 
 logger = logging.getLogger(__name__)
@@ -75,16 +80,46 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     agent, benign_metric_factory, harmful_metric_factory = build_agent_and_dual_metric(config)
 
     # Load examples (separate benign/harmful)
-    examples_by_task = load_eval_examples(config)
+    # We now load the FULL pool and rely on a per-generation minibatch sampler
+    # to reduce overfitting and memory footprint.
+    examples_by_task = load_eval_examples(config, full=True)
     if not examples_by_task.get("benign") or not examples_by_task.get("harmful"):
         raise ValueError("[CAUSAL][OPT] Missing benign or harmful examples; cannot proceed with dual-metric optimization.")
-    eval_fn = build_dual_agent_instruction_eval_fn(
+    eval_fn = build_minibatch_dual_agent_instruction_eval_fn(
         examples_by_task,
         benign_metric_factory=benign_metric_factory,
         harmful_metric_factory=harmful_metric_factory,
         agent=agent,
+        minibatch_size=cconf.optimization.train_data_size,
+        rng=None,
     )
-    opt_result = optimize_instructions(initial_texts, main_lm=main_lm, eval_fn=eval_fn, config=cconf.optimization)
+    # Full eval slice (entire dataset) for post-generation frontier assessment
+    examples_by_task_full = load_eval_examples(config, full=True)
+    # Recreate fresh metric factories for full evaluation to avoid mixing records with train-slice eval.
+    benign_full_factory = AgentHarmMetricFactory(
+        task_name=benign_metric_factory.task_name,
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    harmful_full_factory = AgentHarmMetricFactory(
+        task_name=harmful_metric_factory.task_name,
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    full_eval_fn = build_full_eval_fn(
+        examples_by_task_full,
+        benign_metric_factory=benign_full_factory,
+        harmful_metric_factory=harmful_full_factory,
+        agent=agent,
+    )
+
+    opt_result = optimize_instructions(
+        initial_texts,
+        main_lm=main_lm,
+        eval_fn=eval_fn,
+        full_eval_fn=full_eval_fn,
+        config=cconf.optimization,
+    )
     out_dir = run_out_dir
     frontier_json = [
         {
@@ -120,6 +155,10 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
+    # Dump per-generation full eval metrics if available
+    if opt_result.per_generation_full_eval:
+        with open(out_dir / "frontier_full_eval_per_generation.json", "w") as f:
+            json.dump(opt_result.per_generation_full_eval, f, indent=2)
     logger.info("[CAUSAL][OPT] Summary: %s", summary)
     logger.info("[CAUSAL][OPT] Results written to %s", out_dir.resolve())
     logger.info("[CAUSAL][OPT] Finished optimization: frontier=%d evals=%d", len(opt_result.frontier), opt_result.num_evaluations)

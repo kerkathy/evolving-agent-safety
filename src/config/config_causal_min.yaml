@@ -7,7 +7,7 @@ data:
   train_fraction: 0.4
   shuffle_seed: 0
   behavior_ids: []
-  sample_ids: "1-1,1-2,1-3,1-4,10-1,10-2,10-3,10-4"
+  sample_ids: "1-1,1-4,10-2,10-4"
   detailed_behaviors: 
   hint_included: 
   n_irrelevant_tools: 0
@@ -29,6 +29,7 @@ optimization:
   num_threads: 4
   algorithm: mipro
   run_optimization: false
+  optimize_refusal: false
 
 experiment:
   name: agentharm
@@ -41,19 +42,19 @@ causal:
   param_key: "WebReActAgent.react.predict.signature.instructions"
   child_prefix: "eval_full_"
   # Increase prompt budget for broader seed set for optimization
-  max_collected_prompts: 10
+  max_collected_prompts: 1
   # Intervention types are ignored in pure optimization mode, but kept for parity
   intervention_types: ["drop_instruction", "shuffle_order", "mask_step", "replace_tool_hint"]
   seed: 42
   output_dir: "results/causal_optimization"
   # --- Optimization mode switches ---
   optimization:
-    population_size: 4           # Larger than default 16 for more diversity
-    max_generations: 2           # Slightly higher than default 10
+    population_size: 1           # Larger than default 16 for more diversity
+    max_generations: 1           # Slightly higher than default 10
     random_seed: 42
     target_completion: 1.0
     target_refusal: 1.0
     max_candidates_evaluated: 10 # Cap total evaluations (frontier + mutations)
-    train_data_size: 5      # Train set size for fitness eval
+    train_data_size: 3      # Train set size for fitness eval
     segment_lm_name: openai/gpt-4o-mini # model to use for segmentation
     segment_model_api_base: https://run.v36.cm/v1/

@@ -85,6 +85,8 @@ class OptimizationResult:
     generations: int
     num_evaluations: int
     segment_effects: Dict[str, Dict[str, float]] | None = None  # aggregated effects per segment key
+    # Per-generation full-eval metrics for the frontier (optional extra evaluation set)
+    per_generation_full_eval: list[dict] = field(default_factory=list)
 
 
 def optimize_instructions(
@@ -92,6 +94,7 @@ def optimize_instructions(
     main_lm: dspy.BaseLM,
     config: CausalOptimizationConfig,
     eval_fn: EvalFn,
+    full_eval_fn: Optional[EvalFn] = None,
 ) -> OptimizationResult:
     """
     Optimize instructions via multi-objective search over refusal and completion.
@@ -308,7 +311,16 @@ def optimize_instructions(
 
     logger.info("[OPT] Seed population=%d frontier=%d", len(population), len(frontier))
 
+    # Store per-generation full frontier evaluations (if full_eval_fn provided)
+    per_generation_full_eval: list[dict] = []
+
     for gen in tqdm(range(1, cfg.max_generations + 1), desc="Generations", unit="gen"):
+        # If eval_fn supports per-generation resampling (minibatch stochastic fitness) invoke it now.
+        try:
+            if hasattr(eval_fn, "resample") and callable(getattr(eval_fn, "resample")):
+                getattr(eval_fn, "resample")(gen)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[OPT] Minibatch resample failed at generation %d (%s)", gen, e)
         # Generate mutations from frontier
         for parent_cand in tqdm(list(frontier), desc=f"Gen {gen} Candidates", unit="cand"):
             logger.info("[OPT] Gen %d: processing candidate r=%.2f c=%.2f text=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.text)
@@ -350,6 +362,38 @@ def optimize_instructions(
             max(c.refusal for c in frontier),
             max(c.completion for c in frontier),
         )
+
+        # After each generation, evaluate current frontier on full eval set (if provided)
+        if full_eval_fn is not None:
+            gen_full_metrics: list[dict[str, Any]] = []
+            logger.info("[OPT][FULL] Evaluating frontier on full eval set (gen=%d, size=%d)", gen, len(frontier))
+            for cand in frontier:
+                try:
+                    full_r, full_c, extra_full = full_eval_fn(cand.text)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[OPT][FULL] Full evaluation failed for candidate %s (%s)", cand.hash(), e)
+                    full_r, full_c, extra_full = 0.0, 0.0, {"error": str(e)}
+                # Attach latest full metrics to candidate meta (namespaced by generation)
+                cand.meta.setdefault("full_eval", {})[f"gen_{gen}"] = {
+                    "refusal": full_r,
+                    "completion": full_c,
+                    **extra_full,
+                }
+                gen_full_metrics.append({
+                    "gen": gen,
+                    "hash": cand.hash(),
+                    "text": cand.text,
+                    "refusal_full": full_r,
+                    "completion_full": full_c,
+                    "refusal_train": cand.refusal,
+                    "completion_train": cand.completion,
+                    "meta_extra": extra_full,
+                })
+            per_generation_full_eval.append({
+                "generation": gen,
+                "frontier_size": len(frontier),
+                "candidates": gen_full_metrics,
+            })
         if all(c.refusal >= cfg.target_refusal and c.completion >= cfg.target_completion for c in frontier):
             logger.info("[OPT] Targets reached by entire frontier at generation %d.", gen)
             break
@@ -370,6 +414,7 @@ def optimize_instructions(
         generations=gen,
         num_evaluations=num_evaluations,
         segment_effects=segment_effects or None,
+        per_generation_full_eval=per_generation_full_eval,
     )
 
 
