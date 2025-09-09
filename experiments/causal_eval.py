@@ -35,7 +35,7 @@ def main():
     cfg = load_config(args.config)
     # Lightweight overrides
     if getattr(cfg, "causal", None) is None:
-        cfg.causal = {}
+        raise ValueError("Causal config section missing; cannot run causal analysis.")
 
     exp_name = f"{cfg.experiment.name}_{cfg.data.task_name}_{cfg.data.split}_detail_{cfg.data.detailed_behaviors}_hint_{cfg.data.hint_included}"  # reuse naming scheme subset
     run_causal_analysis(cfg, experiment_name=exp_name)

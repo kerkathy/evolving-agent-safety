@@ -1,43 +1,23 @@
 """Instruction optimization via multi-objective (refusal, completion) search.
 
-Core idea (unchanged): explore mutated variants of instruction strings and
-retain ONLY the Pareto frontier (non‑dominated) under two objectives:
+Core idea: explore mutated variants of instruction strings and
+retain ONLY the Pareto frontier (non-dominated) under two objectives:
 
 * refusal  : Safety / appropriate refusal rate  (higher is better)
 * completion: Task completion performance       (higher is better)
-
-==== IMPORTANT UPDATE ========================================================
-The original version shipped with a purely heuristic ``default_eval_fn`` that
-looked for certain keywords. We now support *real* evaluation aligned with the
-main training / evaluation loop (`main.py`).  A caller (e.g. the causal
-pipeline) can construct a callable that:
-
-1. Creates a ``WebReActAgent`` with the candidate instruction.
-2. Runs it over a (small) evaluation slice of AgentHarm examples.
-3. Uses ``AgentHarmMetricFactory`` to obtain per example:
-      - task_score   -> mapped to our "completion" objective
-      - refusal (0/1)-> averaged to our  "refusal" objective
-
-Because standing up the model + scoring is expensive, **always reuse** the
-already configured global DSPy LM and pass a lightweight eval_fn into
-``optimize_instructions``.  The fallback heuristic is still available for
-offline tests, but emits a warning so it is not confused with real scoring.
-
-To plug in real evaluation use helper created in the causal pipeline:
-
-    eval_fn = build_agent_instruction_eval_fn(metric_factory, examples)
-    optimize_instructions(texts, eval_fn=eval_fn, config=...)
-
-This keeps this module dependency‑light and avoids circular imports.
-=============================================================================
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, List, Sequence
+from typing import Callable, Iterable, List, Sequence, Optional, Dict, Tuple, Any
 import hashlib
 import logging
 import random
+import json
+import ast
+import os
+from tqdm import tqdm
+import dspy 
 
 logger = logging.getLogger(__name__)
 
@@ -59,62 +39,6 @@ class Candidate:
 
     def key(self) -> str:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:16]
-
-
-# ---------------------------------------------------------------------------
-# Mutations (string level, inexpensive & deterministic when seeded)
-# ---------------------------------------------------------------------------
-
-
-def _add_clarity(text: str) -> str:
-    suffix = "\nBe precise, concise, and ensure every step is justified."
-    if suffix.lower() in text.lower():
-        return text
-    return text.rstrip() + "\n" + suffix
-
-
-def _add_refusal_clause(text: str) -> str:
-    clause = (
-        "If a user asks for harmful, illegal, or unsafe actions, politely refuse and offer safer guidance instead."
-    )
-    if clause.lower() in text.lower():
-        return text
-    return text.rstrip() + "\n" + clause
-
-
-def _random_prune_sentence(text: str, rng: random.Random) -> str:
-    sentences = [s.strip() for s in text.split(".") if s.strip()]
-    if len(sentences) <= 1:
-        return text
-    idx = rng.randrange(len(sentences))
-    del sentences[idx]
-    new_text = ". ".join(sentences)
-    if text.endswith('.'):
-        new_text += '.'
-    return new_text
-
-
-def _sufficiency_mutations(text: str, rng: random.Random) -> list[str]:
-    # TODO change/add more mutations
-    return [
-        _add_clarity(text),
-    ]
-
-
-def _refusal_mutations(text: str, rng: random.Random) -> list[str]:
-    # TODO change/add more mutations
-    return [
-        _add_refusal_clause(text),
-    ]
-
-
-def _necessity_mutations(text: str, rng: random.Random) -> list[str]:
-    # Remove possibly redundant parts
-    # TODO change/add more mutations
-    return [
-        _random_prune_sentence(text, rng),
-    ]
-
 
 # ---------------------------------------------------------------------------
 # Pareto utilities
@@ -174,7 +98,6 @@ def default_eval_fn(text: str) -> tuple[float, float, dict]:
     )
     return refusal, completion, {"source": "heuristic"}
 
-
 # ---------------------------------------------------------------------------
 # Optimization loop
 # ---------------------------------------------------------------------------
@@ -188,6 +111,8 @@ class OptimizationConfig:
     target_completion: float = 1.0
     target_refusal: float = 1.0
     max_candidates_evaluated: int | None = 500
+    segmentation_model: str = "openai/gpt-4o-mini" # Which model to use for segmentation & mutations
+    openai_api_base: str = "https://api.openai.com/v1"  # OpenAI-compatible base
 
 
 @dataclass(slots=True)
@@ -195,7 +120,8 @@ class OptimizationResult:
     frontier: list[Candidate]
     population: list[Candidate]
     generations: int
-    evaluations: int
+    num_evaluations: int
+    segment_effects: Dict[str, Dict[str, float]] | None = None  # aggregated effects per segment key
 
 
 def optimize_instructions(
@@ -203,69 +129,294 @@ def optimize_instructions(
     eval_fn: EvalFn | None = None,
     config: OptimizationConfig | None = None,
 ) -> OptimizationResult:
+    """Multi-objective optimization over instruction texts.
+
+    Enhancements added:
+    * Uses an internal dspy.LM cache (per model) instead of externally supplied llm_fn.
+      * All local helper declarations moved to function top for clarity.
+      * Sufficiency / necessity mutations separated into safety vs completion intents.
+      * Necessity mutation now produces two variants: removal & low-information replacement.
+      * Aggregates per-segment effect deltas across evaluated mutations.
+    """
+    # ------------------------------------------------------------------
+    # Local variable declarations (top-of-function for readability)
+    # ------------------------------------------------------------------
     cfg = config or OptimizationConfig()
     rng = random.Random(cfg.random_seed)
     eval_fn = eval_fn or default_eval_fn  # Real eval should be injected by caller.
+    segments_cache: Dict[str, Dict[str, str]] = {}
+    segment_effect_sums: Dict[str, Dict[str, float]] = {}
+    # map aware of low-information fallbacks per semantic key
+    low_info_alternatives: Dict[str, str] = {
+        "metadata_context": "",
+        "system_role": "You are an AI assistant.",
+        "explicit_constraints": "Follow instructions responsibly.",
+        "examples_demos": "(Examples omitted)",
+        "format_specifiers": "Provide a clear answer.",
+        "temperature_verbosity_hints": "Be concise and neutral.",
+        "full": "Instruction.",
+    }
 
-    # Seed population from initial texts.
-    seen: dict[str, Candidate] = {}
-    def add_text(t: str, reason: str):
+    SEGMENT_PROMPT_TEMPLATE = (
+        "Segment the instruction below into several semantically-meaningful chunks: metadata_context, system_role, explicit_constraints, examples_demos, format_specifiers, temperature_verbosity_hints.\n"
+        "Output a dictionary only. Keys MUST be the segment names. Value: corresponding text.\n\n"
+        "Instruction to be segmented:\n{instruction}"
+    )
+
+    _lm_cache: Dict[str, Optional[dspy.LM]] = {}
+
+    def _get_lm(lm_name: str) -> Optional[dspy.LM]:
+        lm = _lm_cache.get(lm_name)
+        if lm is not None:
+            return lm
+        kwargs: Dict[str, Any] = {
+            "model": lm_name,
+            "temperature": 0.0,
+            "seed": cfg.random_seed,
+            "api_key": os.getenv("OPENAI_API_KEY"), # TODO pass in
+            "base_url": cfg.openai_api_base,
+        }
+        try:
+            lm_obj = dspy.LM(**kwargs)  # type: ignore[arg-type]
+            _lm_cache[lm_name] = lm_obj
+            return lm_obj
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[OPT] Failed to initialize dspy.LM (model=%s): %s", lm_name, e)
+            _lm_cache[lm_name] = None
+            return None
+
+    def llm_call(prompt: str) -> str:
+        lm = _get_lm(cfg.segmentation_model)
+        if lm is None:
+            raise ValueError(f"No LM available for model '{cfg.segmentation_model}'")
+        try:
+            return str(lm(prompt)).strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[OPT] dspy.LM call failed: %s", e)
+            return ""
+
+    def _parse_segments(raw_text: str) -> Dict[str, str]:
+        text = raw_text.strip()
+        if not text:
+            return {}
+        # Strip code fences
+        if text.startswith("```") and text.endswith("```"):
+            text = text.strip("`").strip()
+        # JSON first
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return {k: str(v) for k, v in parsed.items()}
+        except Exception:  # noqa: BLE001
+            pass
+        # Python literal fallback
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+                return {k: str(v) for k, v in parsed.items()}
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+
+    def segment_instruction(instr: str) -> Dict[str, str]:
+        k = hashlib.sha256(instr.encode("utf-8")).hexdigest()[:16]
+        if k in segments_cache:
+            return segments_cache[k]
+        prompt = SEGMENT_PROMPT_TEMPLATE.format(instruction=instr)
+        try:
+            raw = llm_call(prompt)
+            mapping = _parse_segments(raw)
+            expected_any = any(
+                key in mapping
+                for key in (
+                    "metadata_context",
+                    "system_role",
+                    "explicit_constraints",
+                    "examples_demos",
+                    "format_specifiers",
+                    "temperature_verbosity_hints",
+                )
+            )
+            if not expected_any:
+                mapping = {"full": instr}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[OPT] Segmentation failed (%s); using fallback.", e)
+            mapping = {"full": instr}
+        mapping = {k2: v for k2, v in mapping.items() if isinstance(v, str) and v.strip()}
+        segments_cache[k] = mapping if mapping else {"full": instr}
+        return segments_cache[k]
+
+    # Mutation spec: dict with keys text, segment_key, mutation_kind, target (completion|safety), parent_key
+
+    def sufficiency_mutations(parent: Candidate) -> list[dict[str, Any]]:
+        """Generate mutations attempting to enhance completion OR safety for each segment.
+
+        Two variants per segment (when possible):
+          - completion-oriented improvement
+          - safety-oriented improvement
+        """
+        segs = segment_instruction(parent.text)
+        segs_json = json.dumps(segs, ensure_ascii=False, indent=2)
+        out: list[dict[str, Any]] = []
+        for key in segs.keys():
+            for target in ("completion", "safety"):
+                intent_desc = (
+                    "Improve task success (higher completion) without reducing safety" if target == "completion" else
+                    "Improve safety / appropriate refusal while preserving legitimate task success"
+                )
+                prompt = (
+                    f"You are optimizing ONE segment ('{key}') of an instruction. {intent_desc}.\n"
+                    "Keep all OTHER segments identical. Reconstruct the full instruction. Return ONLY the full instruction (plain text).\n"
+                    f"Current segments (JSON):\n{segs_json}\n"
+                )
+                try:
+                    candidate_text = llm_call(prompt).strip()
+                    if candidate_text and candidate_text != parent.text and len(candidate_text.split()) > 3:
+                        out.append({
+                            "text": candidate_text,
+                            "segment_key": key,
+                            "mutation_kind": "sufficiency_improve",
+                            "target": target,
+                            "parent_key": parent.key(),
+                        })
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[OPT] Sufficiency mutation failed: %s", e)
+        return out
+
+    def necessity_mutations(parent: Candidate) -> list[dict[str, Any]]:
+        """Generate necessity probing mutations.
+
+        For each segment produce up to two variants:
+          - removal (segment cleared)
+          - low-info replacement (generic, less informative)
+        Additionally we classify target axis as completion or safety removal heuristically based on key name.
+        """
+        segs = segment_instruction(parent.text)
+        out: list[dict[str, Any]] = []
+        for key, value in segs.items():
+            target_completion = any(tok in key for tok in ["constraint", "format", "example", "examples", "demos"])
+            removed_segs = segs.copy()
+            removed_segs[key] = ""
+            removed_text = " ".join(v for v in removed_segs.values() if v)
+            if removed_text and removed_text != parent.text and len(removed_text.split()) > 3:
+                out.append({
+                    "text": removed_text,
+                    "segment_key": key,
+                    "mutation_kind": "necessity_remove",
+                    "target": "completion" if target_completion else "safety",
+                    "parent_key": parent.key(),
+                })
+            lowinfo_segs = segs.copy()
+            lowinfo_segs[key] = low_info_alternatives.get(key, "(omitted)")
+            lowinfo_text = " ".join(v for v in lowinfo_segs.values() if v)
+            if lowinfo_text and lowinfo_text != parent.text and len(lowinfo_text.split()) > 3:
+                out.append({
+                    "text": lowinfo_text,
+                    "segment_key": key,
+                    "mutation_kind": "necessity_lowinfo",
+                    "target": "completion" if target_completion else "safety",
+                    "parent_key": parent.key(),
+                })
+        return out
+
+    # key -> candidate mapping
+    seen_cache: dict[str, Candidate] = {}
+    population: list[Candidate] = list(seen_cache.values())
+    # Initial evaluation
+    frontier = pareto_frontier(population)
+    num_evaluations = len(population)
+
+    def _update_effects(segment_key: str, parent: Candidate, child: Candidate):
+        rec = segment_effect_sums.setdefault(segment_key, {"count": 0.0, "delta_refusal_sum": 0.0, "delta_completion_sum": 0.0})
+        rec["count"] += 1.0
+        rec["delta_refusal_sum"] += child.refusal - parent.refusal
+        rec["delta_completion_sum"] += child.completion - parent.completion
+
+    def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None, parent: Candidate | None = None):
         k = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
-        if k in seen:
-            return
+        if k in seen_cache:
+            return None
         refusal, completion, extra = eval_fn(t)
-        cand = Candidate(text=t, refusal=refusal, completion=completion, meta={"reason": reason, **extra})
-        seen[k] = cand
+        meta = {"reason": reason, **extra}
+        if mutation_meta:
+            meta.update(mutation_meta)
+        cand = Candidate(text=t, refusal=refusal, completion=completion, meta=meta)
+        seen_cache[k] = cand
+        return cand
 
     for t in initial_texts:
-        add_text(t, "seed")
-        if cfg.max_candidates_evaluated and len(seen) >= cfg.max_candidates_evaluated:
+        score_and_register_candidate(t, "seed")
+        # No effect update for seeds
+        if cfg.max_candidates_evaluated and len(seen_cache) >= cfg.max_candidates_evaluated:
             break
-
-    population: list[Candidate] = list(seen.values())
-    frontier = pareto_frontier(population)
-    evaluations = len(population)
 
     logger.info("[OPT] Seed population=%d frontier=%d", len(population), len(frontier))
 
-    for gen in range(1, cfg.max_generations + 1):
-        new_texts: list[str] = []
-        for cand in list(frontier):  # iterate over current frontier snapshot
-            # Sufficiency expansion
-            if cand.completion < cfg.target_completion:
-                new_texts.extend(_sufficiency_mutations(cand.text, rng))
-            else:
-                # Necessity probing (even if refusal incomplete, we still test necessity of completion parts)
-                new_texts.extend(_necessity_mutations(cand.text, rng))
-            # Refusal improvements
-            if cand.refusal < cfg.target_refusal:
-                new_texts.extend(_refusal_mutations(cand.text, rng))
-        if not new_texts:
-            logger.info("[OPT] No new mutations at generation %d; stopping early.", gen)
-            break
-        # Shuffle to avoid order bias and cap expansions
-        rng.shuffle(new_texts)
-        for t in new_texts:
-            if cfg.max_candidates_evaluated and evaluations >= cfg.max_candidates_evaluated:
+    for gen in tqdm(range(1, cfg.max_generations + 1), desc="Generations", unit="gen"):
+        # Generate mutations from frontier
+        for parent_cand in tqdm(list(frontier), desc=f"Gen {gen} Candidates", unit="cand"):
+            # Ensure segments cached
+            segment_instruction(parent_cand.text)
+
+            logger.info("[OPT] Gen %d: mutating candidate r=%.2f c=%.2f key=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.key())
+
+            # Generate mutations
+            new_specs: list[Dict[str, Any]] = []
+            if parent_cand.completion < cfg.target_completion or parent_cand.refusal < cfg.target_refusal:
+                new_specs.extend(sufficiency_mutations(parent_cand))
+            new_specs.extend(necessity_mutations(parent_cand))
+            if not new_specs:
+                logger.info("[OPT] No new mutations at generation %d; stopping early.", gen)
                 break
-            add_text(t, f"gen{gen}")
-            evaluations += 1
-        # Recompute structures
-        population = list(seen.values())
+            rng.shuffle(new_specs)
+
+            logger.info("[OPT] Gen %d: generated %d mutations", gen, len(new_specs))
+
+            # Generate new candidates from specs
+            for spec in tqdm(new_specs, desc="Mutations", unit="mut"):
+                if cfg.max_candidates_evaluated and num_evaluations >= cfg.max_candidates_evaluated:
+                    break
+                child_cand = score_and_register_candidate(
+                    spec["text"], 
+                    f"gen{gen}", 
+                    mutation_meta={k: v for k, v in spec.items() if k != "text"}, parent=parent_cand
+                )
+                if child_cand and spec.get("segment_key") and parent_cand:
+                    _update_effects(spec["segment_key"], parent_cand, child_cand)
+                num_evaluations += 1
+
+        population = list(seen_cache.values())
         frontier = pareto_frontier(population)
         logger.info(
             "[OPT] Gen %d: population=%d frontier=%d evals=%d best(max r=%.2f c=%.2f)",
             gen,
             len(population),
             len(frontier),
-            evaluations,
+            num_evaluations,
             max(c.refusal for c in frontier),
             max(c.completion for c in frontier),
         )
         if all(c.refusal >= cfg.target_refusal and c.completion >= cfg.target_completion for c in frontier):
             logger.info("[OPT] Targets reached by entire frontier at generation %d.", gen)
-            return OptimizationResult(frontier=frontier, population=population, generations=gen, evaluations=evaluations)
-    return OptimizationResult(frontier=frontier, population=population, generations=gen, evaluations=evaluations)
+            break
+
+    # Aggregate averages
+    segment_effects: Dict[str, Dict[str, float]] = {}
+    for key, rec in segment_effect_sums.items():
+        count = rec.get("count", 0.0) or 1.0
+        segment_effects[key] = {
+            "count": rec.get("count", 0.0),
+            "avg_delta_refusal": rec.get("delta_refusal_sum", 0.0) / count,
+            "avg_delta_completion": rec.get("delta_completion_sum", 0.0) / count,
+        }
+
+    return OptimizationResult(
+        frontier=frontier,
+        population=population,
+        generations=gen,
+        num_evaluations=num_evaluations,
+        segment_effects=segment_effects or None,
+    )
 
 
 __all__ = [

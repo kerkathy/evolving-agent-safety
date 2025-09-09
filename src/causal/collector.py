@@ -80,7 +80,7 @@ def collect_prompts(
     if experiment is None:
         raise ValueError(f"Experiment '{experiment_name}' not found")
 
-    # Identify parent run
+    # Identify parent runs
     # Build base filter depending on selector type
     if run_name:
         base_filter = f"tags.mlflow.runName = '{run_name}'"
@@ -89,56 +89,59 @@ def collect_prompts(
             raise ValueError("Either run_name or model_lm_name must be provided")
         base_filter = f"params.model_lm_name = '{model_lm_name}'"
 
-    if run_is_optim:
-        base_filter += " AND params.optim_run_optimization = 'True'"
+    # if run_is_optim:
+    #     base_filter += " AND params.optim_run_optimization = 'True'"
 
     parent_runs = client.search_runs(
         [experiment.experiment_id],
         filter_string=base_filter,
     )
-    logger.info("Searching for parent runs with filter: %s", base_filter)
+    logger.info("Searched %d parent runs with filter: %s", len(parent_runs), base_filter)
     if not parent_runs:
-        raise ValueError("No matching parent run found")
-    parent = parent_runs[0]
-    parent_id = parent.info.run_id
-    logger.info("Using parent run %s (name=%s)", parent_id, parent.data.tags.get("mlflow.runName", ""))
-
-    child_runs = client.search_runs(
-        [parent.info.experiment_id],
-        filter_string=f"tags.mlflow.parentRunId = '{parent_id}'",
-        max_results=500,
-    )
-    logger.info("Found %d child runs under parent", len(child_runs))
+        raise ValueError(f"No parent runs found by filter: {base_filter}")
 
     out: list[PromptRecord] = []
     seen: set[str] = set()
-    for run in child_runs:
-        child_name = run.data.tags.get("mlflow.runName", "")
-        if not child_name.startswith(child_prefix):
-            continue
-        if param_key not in run.data.params:
-            continue
-        instructions = run.data.params[param_key]
-        prompt_id = _hash_text(instructions)
-        if prompt_id in seen:
-            continue
-        seen.add(prompt_id)
-        out.append(
-            PromptRecord(
-                run_id=run.info.run_id,
-                prompt_id=prompt_id,
-                prompt_text=instructions,
-                result_text=None,
-                label=None,
-                raw={
-                    "source": "eval_instructions",
-                    "child_run_name": child_name,
-                    "param_key": param_key,
-                    "parent_run_id": parent_id,
-                    "source_metrics": run.data.metrics,
-                },
-            )
+
+    for parent in parent_runs:
+        parent_id = parent.info.run_id
+        logger.info("Using parent run %s (name=%s)", parent_id, parent.data.tags.get("mlflow.runName", ""))
+
+        child_runs = client.search_runs(
+            [parent.info.experiment_id],
+            filter_string=f"tags.mlflow.parentRunId = '{parent_id}'",
+            max_results=500,
         )
-        if limit and len(out) >= limit:
-            break
+        logger.info("Found %d child runs under parent %s", len(child_runs), parent_id)
+
+        for run in child_runs:
+            child_name = run.data.tags.get("mlflow.runName", "")
+            if not child_name.startswith(child_prefix):
+                continue
+            if param_key not in run.data.params:
+                continue
+            instructions = run.data.params[param_key]
+            prompt_id = _hash_text(instructions)
+            if prompt_id in seen:
+                continue
+            seen.add(prompt_id)
+            out.append(
+                PromptRecord(
+                    run_id=run.info.run_id,
+                    prompt_id=prompt_id,
+                    prompt_text=instructions,
+                    result_text=None,
+                    label=None,
+                    raw={
+                        "source": "eval_instructions",
+                        "child_run_name": child_name,
+                        "param_key": param_key,
+                        "parent_run_id": parent_id,
+                        "source_metrics": run.data.metrics,
+                    },
+                )
+            )
+            if limit and len(out) >= limit:
+                return out
+
     return out

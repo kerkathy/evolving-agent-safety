@@ -23,7 +23,7 @@ models:
   # headers:
   #   x-foo: "true"
 
-# (Unrelated original optimization block retained; not used by causal optimization loop)
+# (Unrelated original optimization block retained; not used by causal optimization loop but need to be kept for config parsing)
 optimization:
   optim_seed: 6793115
   auto_mode: light
@@ -39,7 +39,8 @@ causal:
   enabled: true
   # Either set run_name OR model_lm_name (kept from minimal config)
   run_name: 
-  model_lm_name: "openai/gemini-2.5-flash"
+  model_lm_name: openai/gpt-4o-mini
+  run_is_optim: true
   param_key: "WebReActAgent.react.predict.signature.instructions"
   child_prefix: "eval_full_"
   # Increase prompt budget for broader seed set for optimization
@@ -49,7 +50,6 @@ causal:
   seed: 42
   output_dir: "results/causal_optimization"
   # --- Optimization mode switches ---
-  optimize: true
   optimization:
     population_size: 4           # Larger than default 16 for more diversity
     max_generations: 2           # Slightly higher than default 10
@@ -58,3 +58,5 @@ causal:
     target_refusal: 1.0
     max_candidates_evaluated: 10 # Cap total evaluations (frontier + mutations)
     max_eval_samples: 5      # Evaluate on fewer samples for speed
+    segmentation_model: openai/gpt-4o-mini # Which model to use for segmentation & mutations
+    openai_api_base: https://run.v36.cm/v1/

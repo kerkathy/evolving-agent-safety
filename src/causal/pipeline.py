@@ -15,7 +15,7 @@ Scoring Strategy:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 from pathlib import Path
 import os
 import json
@@ -26,53 +26,16 @@ from datetime import datetime
 import mlflow
 
 from .collector import collect_prompts, PromptRecord
-from .interventions import generate_interventions
-from .evaluator import evaluate_variants, EvalResult
-from .effects import compute_effects
 from .optimization import optimize_instructions, OptimizationConfig
 from .eval_utils import load_eval_examples, build_agent_instruction_eval_fn
 from .runtime_setup import configure_dspy, build_agent_and_metric
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass(slots=True)
-class CausalConfig:
-    enabled: bool = False
-    run_name: str | None = None          # Explicit mlflow run name
-    model_lm_name: str | None = None    # alternative selector if parent_run_name absent
-    param_key: str = "WebReActAgent.react.predict.signature.instructions"
-    child_prefix: str = "eval_full_"
-    max_prompts: int = 200  # passed as limit
-    run_is_optim: bool = True  # whether to restrict parent selection to optimization runs
-    intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
-    seed: int = 42
-    output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
-    # Removed artifact_pattern/cache_results since prompt collection now instruction-based
-    optimize: bool = False                 # If true run multi-objective optimization instead of static effects
-    optimization: dict | None = None       # Nested config for OptimizationConfig
-
-
-def _infer_causal_config(config) -> CausalConfig | None:
-    # Config may or may not have a 'causal' attribute; we stay defensive.
-    raw = getattr(config, "causal", None)
-    if raw is None:
-        raise ValueError("Config missing 'causal' section")
-    if isinstance(raw, CausalConfig):
-        return raw
-    try:
-        return CausalConfig(**{k: v for k, v in vars(raw).items() if not k.startswith("_")})
-    except Exception:
-        # Raw might be a simple namespace/dict
-        if isinstance(raw, dict):
-            return CausalConfig(**raw)
-    return None
-
-
 def run_causal_analysis(config, experiment_name: str) -> None:
     mlflow.set_tracking_uri(config.experiment.uri)  # Adjust as needed
 
-    cconf = _infer_causal_config(config)
+    cconf = config.causal
     if not cconf or not cconf.enabled:
         logger.info("Causal analysis disabled; skipping.")
         return
@@ -102,93 +65,67 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     run_out_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[CAUSAL] Results will be written to %s", run_out_dir.resolve())
 
-    if cconf.optimize:
-        # Run optimization over collected instruction prompts (treat each prompt as seed candidate)
-        opt_cfg_raw = cconf.optimization or {}
-        # Map raw dict into OptimizationConfig (filter unknown keys)
+    # Run optimization over collected instruction prompts (treat each prompt as seed candidate)
+    # Adapt nested causal optimization config (CausalOptimizationConfig) to optimization.OptimizationConfig
+    # The internal optimization loop expects a config with segmentation_model/openai_api_base etc.
+    # We'll map overlapping field names; extras ignored.
+    if cconf.optimization is not None:
+        opt_src = cconf.optimization
+        # Build mapping dict (attribute-style) keeping only keys present in OptimizationConfig
         valid_keys = {f.name for f in OptimizationConfig.__dataclass_fields__.values()}  # type: ignore
-        filtered = {k: v for k, v in opt_cfg_raw.items() if k in valid_keys}
+        src_dict = {k: getattr(opt_src, k) for k in dir(opt_src) if not k.startswith('_') and hasattr(opt_src, k)}
+        filtered = {k: v for k, v in src_dict.items() if k in valid_keys}
         opt_cfg = OptimizationConfig(**filtered)
-        logger.info("[CAUSAL][OPT] Starting multi-objective instruction optimization over %d candidates", len(records))
-        initial_texts = [r.prompt_text for r in records]
-
-        # Configure runtime (DSPy + agent + metric)
-        api_key = os.getenv("OPENAI_API_KEY") or ""
-        configure_dspy(config.models, api_key)
-        agent, metric_factory = build_agent_and_metric(config)
-
-        # Load examples (must be non-empty now)
-        examples = load_eval_examples(config)
-        if not examples:
-            raise ValueError("[CAUSAL][OPT] No evaluation examples loaded; cannot proceed with optimization.")
-        eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=agent)
-        opt_result = optimize_instructions(initial_texts, eval_fn=eval_fn, config=opt_cfg)
-        out_dir = run_out_dir
-        frontier_json = [
-            {
-                "text": c.text,
-                "refusal": c.refusal,
-                "completion": c.completion,
-                "meta": c.meta,
-            }
-            for c in opt_result.frontier
-        ]
-        population_json = [
-            {
-                "text": c.text,
-                "refusal": c.refusal,
-                "completion": c.completion,
-                "meta": c.meta,
-            }
-            for c in opt_result.population
-        ]
-        with open(out_dir / "optimization_frontier.json", "w") as f:
-            json.dump(frontier_json, f, indent=2)
-        with open(out_dir / "optimization_population.json", "w") as f:
-            json.dump(population_json, f, indent=2)
-        summary = {
-            "mode": "optimization",
-            "n_seeds": len(records),
-            "generations": opt_result.generations,
-            "evaluations": opt_result.evaluations,
-            "frontier_size": len(opt_result.frontier),
-            "config": asdict(cconf),
-            "optimization_config": asdict(opt_cfg),
-        }
-        with open(out_dir / "summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
-        logger.info("[CAUSAL][OPT] Summary: %s", summary)
-        logger.info("[CAUSAL][OPT] Results written to %s", out_dir.resolve())
-        logger.info("[CAUSAL][OPT] Finished optimization: frontier=%d evals=%d", len(opt_result.frontier), opt_result.evaluations)
     else:
-        results: list[EvalResult] = []
-        for rec in records:
-            interventions = generate_interventions(rec.prompt_text, cconf.intervention_types, seed=cconf.seed)
-            variant_map = {"original": rec.prompt_text} | {i.kind: i.variant_text for i in interventions}
+        opt_cfg = OptimizationConfig()
+    logger.info("[CAUSAL][OPT] Starting multi-objective instruction optimization over %d candidates", len(records))
+    initial_texts = [r.prompt_text for r in records]
 
-            def scorer(txt: str):  # placeholder scoring
-                if txt == rec.prompt_text and rec.label is not None:
-                    return rec.label, {"source": "label"}
-                return 0.0, {"source": "default"}
+    # Configure runtime (DSPy + agent + metric)
+    api_key = os.getenv("OPENAI_API_KEY") or ""
+    configure_dspy(config.models, api_key)
+    agent, metric_factory = build_agent_and_metric(config)
 
-            evals = evaluate_variants(rec.prompt_id, rec.prompt_text, variant_map, scorer)
-            results.extend(evals)
-
-        effects = compute_effects(results)
-        out_dir = run_out_dir
-        effects_json = [asdict(e) for e in effects]
-        with open(out_dir / "prompt_effects.json", "w") as f:
-            json.dump(effects_json, f, indent=2)
-        summary = {
-            "mode": "effects",
-            "n_prompts": len(records),
-            "n_effects": len(effects),
-            "config": asdict(cconf),
+    # Load examples (must be non-empty now)
+    examples = load_eval_examples(config)
+    if not examples:
+        raise ValueError("[CAUSAL][OPT] No evaluation examples loaded; cannot proceed with optimization.")
+    eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=agent)
+    opt_result = optimize_instructions(initial_texts, eval_fn=eval_fn, config=opt_cfg)
+    out_dir = run_out_dir
+    frontier_json = [
+        {
+            "text": c.text,
+            "refusal": c.refusal,
+            "completion": c.completion,
+            "meta": c.meta,
         }
-        with open(out_dir / "summary.json", "w") as f:
-            json.dump(summary, f, indent=2)
-        try:
-            mlflow.log_artifacts(str(out_dir), artifact_path="causal_analysis")
-        except Exception:
-            logger.debug("[CAUSAL] Failed logging artifacts to MLflow", exc_info=True)
-        logger.info("[CAUSAL] Finished causal analysis: %d prompts", len(records))
+        for c in opt_result.frontier
+    ]
+    population_json = [
+        {
+            "text": c.text,
+            "refusal": c.refusal,
+            "completion": c.completion,
+            "meta": c.meta,
+        }
+        for c in opt_result.population
+    ]
+    with open(out_dir / "optimization_frontier.json", "w") as f:
+        json.dump(frontier_json, f, indent=2)
+    with open(out_dir / "optimization_population.json", "w") as f:
+        json.dump(population_json, f, indent=2)
+    summary = {
+        "mode": "optimization",
+        "n_seeds": len(records),
+        "generations": opt_result.generations,
+        "evaluations": opt_result.num_evaluations,
+        "frontier_size": len(opt_result.frontier),
+        "config": asdict(cconf),
+        "optimization_config": asdict(opt_cfg),
+    }
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info("[CAUSAL][OPT] Summary: %s", summary)
+    logger.info("[CAUSAL][OPT] Results written to %s", out_dir.resolve())
+    logger.info("[CAUSAL][OPT] Finished optimization: frontier=%d evals=%d", len(opt_result.frontier), opt_result.num_evaluations)

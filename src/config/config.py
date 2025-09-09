@@ -59,11 +59,54 @@ class ExperimentConfig:
     name: str = "agentharm_experiment"
 
 @dataclass(slots=True)
+class CausalOptimizationConfig:
+    """Nested optimization settings specific to causal instruction search.
+
+    Distinct from top-level OptimizationConfig used in baseline/batch runs.
+    Includes evaluation sampling controls (e.g., max_eval_samples) and
+    mutation / segmentation model configuration.
+    """
+    population_size: int = 16
+    max_generations: int = 10
+    random_seed: int = 42
+    target_completion: float = 1.0
+    target_refusal: float = 1.0
+    max_candidates_evaluated: int | None = 500
+    max_eval_samples: int = 10          # How many dataset examples to use per candidate evaluation
+    segmentation_model: str = "openai/gpt-4o-mini"
+    openai_api_base: str = "https://api.openai.com/v1"
+
+    def clamp(self) -> None:
+        if self.population_size <= 0:
+            self.population_size = 1
+        if self.max_generations <= 0:
+            self.max_generations = 1
+        if self.max_eval_samples <= 0:
+            self.max_eval_samples = 1
+
+@dataclass(slots=True)
+class CausalConfig:
+    enabled: bool = False
+    run_name: str | None = None          # Explicit mlflow run name
+    model_lm_name: str | None = None    # alternative selector if parent_run_name absent
+    param_key: str = "WebReActAgent.react.predict.signature.instructions"
+    child_prefix: str = "eval_full_"
+    max_prompts: int = 200  # passed as limit
+    run_is_optim: bool = True  # whether to restrict parent selection to optimization runs
+    intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
+    seed: int = 42
+    output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
+    optimization: CausalOptimizationConfig | None = None       # Nested config for instruction optimization
+
+
+@dataclass(slots=True)
 class Config:
     data: AgentHarmDataConfig
     models: ModelConfig
     optimization: OptimizationConfig
     experiment: ExperimentConfig
+    # Optional causal sub-config (duck-typed; not required by existing runs)
+    causal: CausalConfig | None = None
 
     def as_flat_dict(self) -> dict:
         flat = {}
@@ -125,10 +168,18 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
         optimization_dict["algorithm"] = algo.lower()
     optimization = OptimizationConfig(**optimization_dict)
     experiment = ExperimentConfig(**raw["experiment"])
+    causal_cfg = None
+    if "causal" in raw:
+        causal_raw = dict(raw["causal"])
+        causal_opt_raw = dict(causal_raw.pop("optimization", None))
+        causal_cfg = CausalConfig(**causal_raw)
+        if causal_opt_raw:
+            causal_opt = CausalOptimizationConfig(**causal_opt_raw)  # type: ignore[arg-type]
+            causal_opt.clamp()
+            causal_cfg.optimization = causal_opt
 
-    # data.validate()
     cfg = Config(
-        data=data, models=models, optimization=optimization, experiment=experiment
+        data=data, models=models, optimization=optimization, experiment=experiment, causal=causal_cfg
     )
 
     # Log the loaded configuration at INFO level (with sensitive fields masked)
@@ -146,6 +197,8 @@ __all__ = [
     "ModelConfig",
     "OptimizationConfig",
     "ExperimentConfig",
+    "CausalOptimizationConfig",
+    "CausalConfig",
     "Config",
     "load_config",
 ]

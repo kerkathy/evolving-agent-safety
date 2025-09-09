@@ -11,7 +11,6 @@ import os
 import argparse
 from dotenv import load_dotenv
 import logging
-from datetime import datetime
 
 import dspy
 import mlflow
@@ -140,10 +139,11 @@ def main():
     metric_factory.log_detailed_results("eval_baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("eval_baseline", reset=True)
 
+    # Stop if optimization is disabled
     if config.optimization.run_optimization is False:
         logger.info("Skipping optimization as per config.")
         return
-
+    
     # ---- Optimization ----
     logger.info("Optimizing agent...")
 

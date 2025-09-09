@@ -13,6 +13,7 @@ dependencies = [
     "ipywidgets>=8.1.7",
     "func-timeout>=4.3.5",
     "inspect-evals",
+    "tqdm>=4.67.1",
 ]
 
 [tool.uv.sources]
