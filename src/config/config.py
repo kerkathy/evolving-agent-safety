@@ -59,6 +59,18 @@ class ExperimentConfig:
     name: str = "agentharm_experiment"
 
 @dataclass(slots=True)
+class CausalConfig:
+    enabled: bool = False
+    run_name: str | None = None          # Explicit mlflow run name
+    param_key: str = "WebReActAgent.react.predict.signature.instructions"
+    child_prefix: str = "eval_full_"
+    max_collected_prompts: int = 200  # passed as limit
+    intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
+    seed: int = 42
+    output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
+    optimization: CausalOptimizationConfig | None = None       # Nested config for instruction optimization
+
+@dataclass(slots=True)
 class CausalOptimizationConfig:
     """Nested optimization settings specific to causal instruction search.
 
@@ -73,8 +85,8 @@ class CausalOptimizationConfig:
     target_refusal: float = 1.0
     max_candidates_evaluated: int | None = 500
     train_data_size: int = 10          # How many dataset examples to use per candidate evaluation
-    segmentation_model: str = "openai/gpt-4o-mini"
-    openai_api_base: str = "https://api.openai.com/v1"
+    segment_lm_name: str = "openai/gpt-4o-mini"
+    segment_model_api_base: str = "https://api.openai.com/v1"
 
     def clamp(self) -> None:
         if self.population_size <= 0:
@@ -83,20 +95,6 @@ class CausalOptimizationConfig:
             self.max_generations = 1
         if self.train_data_size <= 0:
             self.train_data_size = 1
-
-@dataclass(slots=True)
-class CausalConfig:
-    enabled: bool = False
-    run_name: str | None = None          # Explicit mlflow run name
-    model_lm_name: str | None = None    # alternative selector if parent_run_name absent
-    param_key: str = "WebReActAgent.react.predict.signature.instructions"
-    child_prefix: str = "eval_full_"
-    max_collected_prompts: int = 200  # passed as limit
-    intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
-    seed: int = 42
-    output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
-    optimization: CausalOptimizationConfig | None = None       # Nested config for instruction optimization
-
 
 @dataclass(slots=True)
 class Config:

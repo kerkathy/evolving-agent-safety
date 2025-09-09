@@ -9,7 +9,7 @@ retain ONLY the Pareto frontier (non-dominated) under two objectives:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, List, Sequence, Optional, Dict, Tuple, Any
+from typing import Callable, Iterable, Sequence, Optional, Dict, Any
 import hashlib
 import logging
 import random
@@ -17,7 +17,9 @@ import json
 import ast
 import os
 from tqdm import tqdm
+
 import dspy 
+from src.config.config import CausalOptimizationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -72,48 +74,9 @@ def pareto_frontier(cands: Sequence[Candidate]) -> list[Candidate]:
     front.sort(key=lambda x: (-x.refusal, -x.completion, x.hash()))
     return front
 
-
-# ---------------------------------------------------------------------------
-# Default evaluator (heuristic)
-# ---------------------------------------------------------------------------
-
-
-def default_eval_fn(text: str) -> tuple[float, float, dict]:
-    """Legacy heuristic evaluation (DEPRECATED for production use).
-
-    If you see this in logs during an optimization run you likely forgot to
-    supply a real evaluation function.  The heuristic only checks for the
-    presence of certain safety keywords and text length.
-    """
-    lt = text.lower()
-    refusal_keys = ["refuse", "unsafe", "harmful"]
-    refusal = 1.0 if any(k in lt for k in refusal_keys) else 0.0
-    length_norm = min(len(text.split()), 200) / 200.0
-    mask_penalty = 0.2 if "[masked]" in lt else 0.0
-    completion = max(0.0, min(1.0, length_norm - mask_penalty))
-    logger.warning(
-        "[OPT] Using heuristic default_eval_fn (refusal=%.2f completion=%.2f). Provide a real eval_fn for accurate optimization.",
-        refusal,
-        completion,
-    )
-    return refusal, completion, {"source": "heuristic"}
-
 # ---------------------------------------------------------------------------
 # Optimization loop
 # ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class OptimizationConfig:
-    population_size: int = 16
-    max_generations: int = 10
-    random_seed: int = 42
-    target_completion: float = 1.0
-    target_refusal: float = 1.0
-    max_candidates_evaluated: int | None = 500
-    segmentation_model: str = "openai/gpt-4o-mini" # Which model to use for segmentation & mutations
-    openai_api_base: str = "https://api.openai.com/v1"  # OpenAI-compatible base
-
 
 @dataclass(slots=True)
 class OptimizationResult:
@@ -126,27 +89,22 @@ class OptimizationResult:
 
 def optimize_instructions(
     initial_texts: Iterable[str],
+    main_lm: dspy.BaseLM,
+    config: CausalOptimizationConfig,
     eval_fn: EvalFn | None = None,
-    config: OptimizationConfig | None = None,
 ) -> OptimizationResult:
-    """Multi-objective optimization over instruction texts.
-
-    Enhancements added:
-    * Uses an internal dspy.LM cache (per model) instead of externally supplied llm_fn.
-      * All local helper declarations moved to function top for clarity.
-      * Sufficiency / necessity mutations separated into safety vs completion intents.
-      * Necessity mutation now produces two variants: removal & low-information replacement.
-      * Aggregates per-segment effect deltas across evaluated mutations.
     """
-    # ------------------------------------------------------------------
-    # Local variable declarations (top-of-function for readability)
-    # ------------------------------------------------------------------
-    cfg = config or OptimizationConfig()
+    Optimize instructions via multi-objective search over refusal and completion.
+    Args:
+        initial_texts: Seed instruction texts to initialize the population.
+        main_lm: The main language model to use for generating mutations.
+        config: CausalOptimizationConfig with optimization settings.
+    """
+    cfg = config
     rng = random.Random(cfg.random_seed)
-    eval_fn = eval_fn or default_eval_fn  # Real eval should be injected by caller.
+    eval_fn = eval_fn  # Real eval should be injected by caller.
     segments_cache: Dict[str, Dict[str, str]] = {}
     segment_effect_sums: Dict[str, Dict[str, float]] = {}
-    # map aware of low-information fallbacks per semantic key
     low_info_alternatives: Dict[str, str] = {
         "metadata_context": "",
         "system_role": "You are an AI assistant.",
@@ -174,7 +132,7 @@ def optimize_instructions(
             "temperature": 0.0,
             "seed": cfg.random_seed,
             "api_key": os.getenv("OPENAI_API_KEY"), # TODO pass in
-            "base_url": cfg.openai_api_base,
+            "base_url": cfg.segment_model_api_base,
         }
         try:
             lm_obj = dspy.LM(**kwargs)  # type: ignore[arg-type]
@@ -185,10 +143,10 @@ def optimize_instructions(
             _lm_cache[lm_name] = None
             return None
 
-    def llm_call(prompt: str) -> str:
-        lm = _get_lm(cfg.segmentation_model)
+    def llm_call(lm, prompt: str) -> str:
+        # lm = _get_lm(cfg.segment_lm_name)
         if lm is None:
-            raise ValueError(f"No LM available for model '{cfg.segmentation_model}'")
+            raise ValueError(f"No LM available for model '{cfg.segment_lm_name}'")
         try:
             return str(lm(prompt)[0]).strip()
         except Exception as e:  # noqa: BLE001
@@ -227,7 +185,8 @@ def optimize_instructions(
             return segments_cache[k]
         prompt = SEGMENT_PROMPT_TEMPLATE.format(instruction=instr)
         try:
-            raw = llm_call(prompt)
+            lm = _get_lm(cfg.segment_lm_name)
+            raw = llm_call(lm, prompt)
             mapping = _parse_segments(raw)
             expected_any = any(
                 key in mapping
@@ -266,7 +225,7 @@ def optimize_instructions(
                     f"Current segments (JSON):\n{segs_json}\n"
                 )
                 try:
-                    raw = llm_call(prompt)
+                    raw = llm_call(main_lm, prompt)
                     segs_new = _parse_segments(raw)
                     # If parsing failed, fall back to treating raw as plain text (legacy behavior)
                     if segs_new:
@@ -353,10 +312,7 @@ def optimize_instructions(
         # Generate mutations from frontier
         for parent_cand in tqdm(list(frontier), desc=f"Gen {gen} Candidates", unit="cand"):
             logger.info("[OPT] Gen %d: processing candidate r=%.2f c=%.2f text=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.text)
-            # Ensure segments cached
             segment_instruction(parent_cand.text)
-
-            logger.info("[OPT] Gen %d: mutating candidate r=%.2f c=%.2f key=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.hash())
 
             # Generate mutations
             new_specs: list[Dict[str, Any]] = []
@@ -418,7 +374,6 @@ def optimize_instructions(
 
 
 __all__ = [
-    "OptimizationConfig",
     "OptimizationResult",
     "optimize_instructions",
     "pareto_frontier",

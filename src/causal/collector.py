@@ -70,6 +70,8 @@ def collect_prompts(
         Each record's ``prompt_text`` is the instruction string. ``result_text``
         and ``label`` are left ``None``.
     """
+    logger.info("[COLLECT] Collecting prompts from experiment '%s' (run_name=%s, model_lm_name=%s)", experiment_name, run_name, model_lm_name)
+    
     client = MlflowClient()
     experiment = client.get_experiment_by_name(experiment_name)
     if experiment is None:

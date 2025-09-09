@@ -25,7 +25,7 @@ from datetime import datetime
 import mlflow
 
 from .collector import collect_prompts, PromptRecord
-from .optimization import optimize_instructions, OptimizationConfig
+from .optimization import optimize_instructions
 from .eval_utils import load_eval_examples, build_agent_instruction_eval_fn
 from .runtime_setup import configure_dspy, build_agent_and_metric
 
@@ -40,12 +40,12 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         return
 
     logger.info("[CAUSAL] Collecting instruction prompts (max=%s)...", cconf.max_collected_prompts)
-    if not (cconf.run_name or cconf.model_lm_name):
-        logger.warning("[CAUSAL] Neither run_name nor model_lm_name provided; prompt collection will likely fail.")
+    if not (cconf.run_name or config.models.lm_name):
+        raise ValueError("Either run_name or model_lm_name must be set in causal config.")
     records: list[PromptRecord] = collect_prompts(
         experiment_name,
         run_name=cconf.run_name,
-        model_lm_name=cconf.model_lm_name,
+        model_lm_name=config.models.lm_name,
         param_key=cconf.param_key,
         child_prefix=cconf.child_prefix,
         limit=cconf.max_collected_prompts,
@@ -60,36 +60,26 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     # Create a unique timestamped output directory for this run (both modes)
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     run_out_dir = Path(f"{cconf.output_dir}_{timestamp}")
-    run_out_dir.mkdir(parents=True, exist_ok=True)
+    if run_out_dir.exists():
+        raise FileExistsError(f"Output directory {run_out_dir.resolve()} already exists. Aborting to avoid overwrite.")
+    run_out_dir.mkdir(parents=True, exist_ok=False)
     logger.info("[CAUSAL] Results will be written to %s", run_out_dir.resolve())
 
-    # Run optimization over collected instruction prompts (treat each prompt as seed candidate)
-    # Adapt nested causal optimization config (CausalOptimizationConfig) to optimization.OptimizationConfig
-    # The internal optimization loop expects a config with segmentation_model/openai_api_base etc.
-    # We'll map overlapping field names; extras ignored.
-    if cconf.optimization is not None:
-        opt_src = cconf.optimization
-        # Build mapping dict (attribute-style) keeping only keys present in OptimizationConfig
-        valid_keys = {f.name for f in OptimizationConfig.__dataclass_fields__.values()}  # type: ignore
-        src_dict = {k: getattr(opt_src, k) for k in dir(opt_src) if not k.startswith('_') and hasattr(opt_src, k)}
-        filtered = {k: v for k, v in src_dict.items() if k in valid_keys}
-        opt_cfg = OptimizationConfig(**filtered)
-    else:
-        opt_cfg = OptimizationConfig()
+    # Run optimization over collected instruction prompts
     logger.info("[CAUSAL][OPT] Starting multi-objective instruction optimization over %d candidates", len(records))
     initial_texts = [r.prompt_text for r in records]
 
     # Configure runtime (DSPy + agent + metric)
     api_key = os.getenv("OPENAI_API_KEY") or ""
-    configure_dspy(config.models, api_key)
+    main_lm = configure_dspy(config.models, api_key)
     agent, metric_factory = build_agent_and_metric(config)
 
-    # Load examples (must be non-empty now)
+    # Load examples
     examples = load_eval_examples(config)
     if not examples:
         raise ValueError("[CAUSAL][OPT] No evaluation examples loaded; cannot proceed with optimization.")
     eval_fn = build_agent_instruction_eval_fn(examples, metric_factory, agent=agent)
-    opt_result = optimize_instructions(initial_texts, eval_fn=eval_fn, config=opt_cfg)
+    opt_result = optimize_instructions(initial_texts, main_lm=main_lm, eval_fn=eval_fn, config=cconf.optimization)
     out_dir = run_out_dir
     frontier_json = [
         {
@@ -114,13 +104,11 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     with open(out_dir / "optimization_population.json", "w") as f:
         json.dump(population_json, f, indent=2)
     summary = {
-        "mode": "optimization",
         "n_seeds": len(records),
         "generations": opt_result.generations,
         "evaluations": opt_result.num_evaluations,
         "frontier_size": len(opt_result.frontier),
-        "config": asdict(cconf),
-        "optimization_config": asdict(opt_cfg),
+        "config": asdict(config),
         "segment_effects": opt_result.segment_effects,  # Added segment effects
     }
     with open(out_dir / "summary.json", "w") as f:

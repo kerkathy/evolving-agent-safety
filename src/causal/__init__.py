@@ -17,11 +17,10 @@ rest of the project remains unaffected.
 """
 
 from .pipeline import run_causal_analysis  # noqa: F401
-from .optimization import optimize_instructions, OptimizationConfig, OptimizationResult  # noqa: F401
+from .optimization import optimize_instructions, OptimizationResult  # noqa: F401
 
 __all__ = [
     "run_causal_analysis",
     "optimize_instructions",
-    "OptimizationConfig",
     "OptimizationResult",
 ]
