@@ -52,6 +52,8 @@ class OptimizationConfig:
     algorithm: Literal["mipro", "copro", "gepa"] = "gepa"
     # Whether to run the optimization stage after baseline evaluation
     run_optimization: bool = True
+    # If true, use refusal-oriented metrics (refusal rate) instead of task success score during optimization
+    optimize_refusal: bool = False
 
 @dataclass(slots=True)
 class ExperimentConfig:

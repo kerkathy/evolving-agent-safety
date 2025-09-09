@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import argparse
+from typing import Literal, cast
 from dotenv import load_dotenv
 import logging
 
@@ -22,6 +23,8 @@ from src.agent import WebReActAgent
 from src.adapter import FunctionCallAdapter
 from src.utils.logging_setup import setup_logging, mlflow_setup
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
+from src.evaluation import evaluate_safety_panels
+from src.optimization import optimize_agent
 
 
 # %%
@@ -104,12 +107,25 @@ def main():
         refusal_judge_model=config.models.refusal_judge_model,
         semantic_judge_model=config.models.semantic_judge_model,
     )
-    if config.optimization.algorithm == "gepa":
-        metric_fn = metric_factory.metric_with_feedback
-    elif config.optimization.algorithm in ["mipro", "copro"]:
-        metric_fn = metric_factory.metric
+    # Select metric depending on optimization target (task success vs refusal)
+    optimize_refusal = getattr(config.optimization, "optimize_refusal", False)
+    algo = config.optimization.algorithm
+    if optimize_refusal:
+        if algo == "gepa":
+            metric_fn = metric_factory.refusal_metric_with_feedback
+        elif algo in ["mipro", "copro"]:
+            metric_fn = metric_factory.refusal_metric
+        else:
+            raise ValueError(f"Unknown optimization algorithm: {algo}")
+        logger.info("Optimization target: REFUSAL (maximize refusal rate)")
     else:
-        raise ValueError(f"Unknown optimization algorithm: {config.optimization.algorithm}")
+        if algo == "gepa":
+            metric_fn = metric_factory.metric_with_feedback
+        elif algo in ["mipro", "copro"]:
+            metric_fn = metric_factory.metric
+        else:
+            raise ValueError(f"Unknown optimization algorithm: {algo}")
+        logger.info("Optimization target: TASK SCORE")
 
     logger.info("Setting up evaluation...")
     evaluate = dspy.Evaluate(
@@ -139,6 +155,101 @@ def main():
     metric_factory.log_detailed_results("eval_baseline_detailed_results", reset=False)
     metric_factory.summarize_and_log("eval_baseline", reset=True)
 
+    # # ---- Cross-task Safety Panel (Baseline) ----
+    # # Always evaluate benign task score and harmful refusal, regardless of optimization target
+    # def _load_dev_examples(task_name: Literal["harmful", "benign", "chat"]):
+    #     data_cfg = config.data
+    #     raw = load_agentharm_data(
+    #         behavior_ids=list(data_cfg.behavior_ids or []),
+    #         sample_ids=list(data_cfg.sample_ids or []),
+    #         task_name=cast(Literal["harmful", "benign", "chat"], task_name),
+    #         split=data_cfg.split,
+    #         detailed_behaviors=data_cfg.detailed_behaviors,
+    #         hint_included=data_cfg.hint_included,
+    #         n_irrelevant_tools=data_cfg.n_irrelevant_tools,
+    #     )
+    #     examples = build_dspy_examples(raw)
+    #     # Use all examples directly as a dev/eval set (no split needed here)
+    #     return examples
+
+    # # Cache for safety panel datasets and metric factories to avoid repeated heavy instantiation
+    # safety_cache: dict = {"devsets": {}, "factories": {}}
+
+    # def evaluate_safety_panels(current_agent, step: int):
+    #     """Evaluate and log benign task score and harmful refusal.
+
+    #     Uses cached datasets and metric factories (created on first call) to minimize
+    #     memory churn and redundant model client construction.
+    #     Metrics logged: 'benign_task_score' (mean task score) and 'harmful_refusal' (refusal rate).
+    #     """
+    #     panels = [
+    #         {
+    #             "task": "benign",
+    #             "metric_name": "benign_task_score",
+    #             "metric_attr": "task_score_mean",
+    #             "metric_fn_selector": "metric",  # task score
+    #             "summary_phase": "benign_eval",
+    #         },
+    #         {
+    #             "task": "harmful",
+    #             "metric_name": "harmful_refusal",
+    #             "metric_attr": "refusal_rate",
+    #             "metric_fn_selector": "refusal_metric",  # refusal rate
+    #             "summary_phase": "harmful_eval",
+    #         },
+    #     ]
+
+    #     for panel in panels:
+    #         task = panel["task"]
+    #         try:
+    #             # Dataset caching
+    #             if task not in safety_cache["devsets"]:
+    #                 devset = _load_dev_examples(cast(Literal["harmful", "benign", "chat"], task)) or []
+    #                 safety_cache["devsets"][task] = devset
+    #             devset = safety_cache["devsets"].get(task, [])
+    #             if not devset:
+    #                 logger.warning("[Safety Panel] %s dataset empty; skipping %s", task, panel["metric_name"])
+    #                 continue
+
+    #             # Metric factory caching
+    #             if task not in safety_cache["factories"]:
+    #                 safety_cache["factories"][task] = AgentHarmMetricFactory(
+    #                     task_name=task,
+    #                     refusal_judge_model=config.models.refusal_judge_model,
+    #                     semantic_judge_model=config.models.semantic_judge_model,
+    #                 )
+    #             factory: AgentHarmMetricFactory = safety_cache["factories"][task]
+    #             # Reset records before fresh evaluation (retain heavy model objects)
+    #             factory.reset()
+
+    #             metric_fn = getattr(factory, panel["metric_fn_selector"])
+    #             eval_runner = dspy.Evaluate(
+    #                 devset=devset,
+    #                 metric=metric_fn,
+    #                 num_threads=1,
+    #                 display_progress=False,
+    #                 display_table=0,
+    #                 max_errors=999,
+    #                 provide_traceback=False,
+    #             )
+    #             logger.info(
+    #                 "[Safety Panel] Evaluating %s via %s (n=%d)",
+    #                 panel["metric_name"],
+    #                 panel["metric_fn_selector"],
+    #                 len(devset),
+    #             )
+    #             eval_runner(current_agent)
+    #             summary = factory.summarize_and_log(panel["summary_phase"], reset=True)
+    #             if summary:
+    #                 mlflow.log_metric(panel["metric_name"], float(summary.get(panel["metric_attr"], 0.0)), step=step)
+    #         except Exception as e:
+    #             logger.warning(
+    #                 "[Safety Panel] %s evaluation failed: %s", panel["metric_name"], e, exc_info=True
+    #             )
+
+    # Baseline safety panel at step=0
+    evaluate_safety_panels(agent, config, step=0)
+
     # Stop if optimization is disabled
     if config.optimization.run_optimization is False:
         logger.info("Skipping optimization as per config.")
@@ -146,56 +257,7 @@ def main():
     
     # ---- Optimization ----
     logger.info("Optimizing agent...")
-
-    optimizer_name = getattr(config.optimization, "algorithm", "gepa")
-    optimizer = None
-    if optimizer_name == "mipro":
-        logger.info("Using MIPROv2 optimizer")
-        optimizer = dspy.MIPROv2(
-            metric=metric_fn,
-            auto=config.optimization.auto_mode,
-            max_bootstrapped_demos=0,
-            max_labeled_demos=0,
-            num_threads=config.optimization.num_threads,
-            verbose=False,
-        )
-        optimized_agent = optimizer.compile(
-            agent, trainset=trainset, seed=config.optimization.optim_seed
-        )
-    elif optimizer_name == "copro":
-        logger.info("Using COPRO optimizer")
-        optimizer = dspy.COPRO(
-            metric=metric_fn,
-            verbose=False,
-        )
-        optimized_agent = optimizer.compile(
-            agent, trainset=trainset, eval_kwargs={}
-        )
-    elif optimizer_name == "gepa":
-        logger.info("Using GEPA optimizer")
-        optimizer = dspy.GEPA(
-            metric=metric_fn,
-            auto=config.optimization.auto_mode,
-            num_threads=config.optimization.num_threads,
-            track_stats=True,
-            use_merge=False,
-            reflection_lm=create_enhanced_dspy_lm(config.models, api_key),  # type: ignore[arg-type]
-        )
-        optimized_agent = optimizer.compile(
-            agent,
-            trainset=trainset,
-            # valset=devset,
-        )
-    else:
-        raise ValueError(f"Unknown optimization algorithm: {optimizer_name}")
-
-    metric_factory.log_detailed_results("train_detailed_results", reset=False)
-    metric_factory.summarize_and_log("train", reset=True, num_records_per_step=len(trainset))
-
-    mlflow.dspy.log_model(
-        optimized_agent,
-        name="dspy_model",
-    )
+    optimized_agent = optimize_agent(agent, trainset, config, metric_fn, api_key)
 
     # ---- Optimized Eval ----
     metric_factory.reset()
@@ -203,6 +265,9 @@ def main():
     evaluate(optimized_agent, metric=metric_fn)
     metric_factory.log_detailed_results("eval_final_detailed_results", reset=False)
     metric_factory.summarize_and_log("eval_final", reset=True)
+
+    # Post-optimization safety panel at step=1
+    evaluate_safety_panels(optimized_agent, config, step=1)
 
     logger.info("Run complete")
 

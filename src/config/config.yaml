@@ -27,6 +27,7 @@ optimization:
   num_threads: 4
   algorithm: mipro # one of: mipro, copro, gepa
   run_optimization: true
+  optimize_refusal: false  # set true to optimize using refusal metric instead of task success
 
 experiment:
   name: agentharm
