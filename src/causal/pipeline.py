@@ -163,6 +163,12 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         "config": asdict(config),
         "segment_effects": opt_result.segment_effects,  # Added segment effects
         "test_results": test_results,
+        "test_summary": {
+            "best_refusal_test": max((r["refusal_test"] for r in test_results), default=0.0),
+            "best_completion_test": max((r["completion_test"] for r in test_results), default=0.0),
+            "avg_refusal_test": sum((r["refusal_test"] for r in test_results)) / (len(test_results) or 1),
+            "avg_completion_test": sum((r["completion_test"] for r in test_results)) / (len(test_results) or 1),
+        },
     }
 
     write_optimization_outputs(

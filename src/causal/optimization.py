@@ -435,6 +435,8 @@ def optimize_instructions(
                 "n_seeds": n_seeds,
                 "best_refusal": max(c.refusal for c in frontier) if frontier else 0.0,
                 "best_completion": max(c.completion for c in frontier) if frontier else 0.0,
+                "avg_refusal": sum(c.refusal for c in population) / (len(population) or 1),
+                "avg_completion": sum(c.completion for c in population) / (len(population) or 1),
                 "segment_effects": segment_effects_ckpt or None,
             }
 
@@ -478,6 +480,12 @@ def optimize_instructions(
             "generation": gen,
             "frontier_size": len(frontier),
             "candidates": gen_full_metrics,
+            "summary": {
+                "best_refusal_full": max((m["refusal_full"] for m in gen_full_metrics), default=0.0),
+                "best_completion_full": max((m["completion_full"] for m in gen_full_metrics), default=0.0),
+                "avg_refusal_full": sum((m["refusal_full"] for m in gen_full_metrics)) / (len(gen_full_metrics) or 1),
+                "avg_completion_full": sum((m["completion_full"] for m in gen_full_metrics)) / (len(gen_full_metrics) or 1),
+            }
         })
 
         # Save the full eval result after running the whole eval
