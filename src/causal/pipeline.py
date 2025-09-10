@@ -26,6 +26,7 @@ import mlflow
 
 from .collector import collect_prompts, PromptRecord
 from .optimization import optimize_instructions
+from .io_utils import write_optimization_outputs
 from .eval_utils import (
     load_eval_examples,
     build_full_eval_fn,
@@ -85,16 +86,16 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     examples_by_task = load_eval_examples(config, full=True)
     if not examples_by_task.get("benign") or not examples_by_task.get("harmful"):
         raise ValueError("[CAUSAL][OPT] Missing benign or harmful examples; cannot proceed with dual-metric optimization.")
-    eval_fn = build_minibatch_dual_agent_instruction_eval_fn(
+    train_eval_fn = build_minibatch_dual_agent_instruction_eval_fn(
         examples_by_task,
         benign_metric_factory=benign_metric_factory,
         harmful_metric_factory=harmful_metric_factory,
         agent=agent,
-        minibatch_size=cconf.optimization.train_data_size,
+        minibatch_size=cconf.optimization.minibatch_size,
         rng=None,
+        split='train',
     )
-    # Full eval slice (entire dataset) for post-generation frontier assessment
-    examples_by_task_full = load_eval_examples(config, full=True)
+    # Full eval slice for post-generation frontier assessment
     # Recreate fresh metric factories for full evaluation to avoid mixing records with train-slice eval.
     benign_full_factory = AgentHarmMetricFactory(
         task_name=benign_metric_factory.task_name,
@@ -106,45 +107,54 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         refusal_judge_model=config.models.refusal_judge_model,
         semantic_judge_model=config.models.semantic_judge_model,
     )
-    full_eval_fn = build_full_eval_fn(
-        examples_by_task_full,
+    dev_eval_fn = build_full_eval_fn(
+        examples_by_task,
         benign_metric_factory=benign_full_factory,
         harmful_metric_factory=harmful_full_factory,
         agent=agent,
+        split='eval',
     )
 
     opt_result = optimize_instructions(
         initial_texts,
         main_lm=main_lm,
-        eval_fn=eval_fn,
-        full_eval_fn=full_eval_fn,
+        train_eval_fn=train_eval_fn,
+        dev_eval_fn=dev_eval_fn,
         config=cconf.optimization,
+        checkpoint_dir=str(run_out_dir),
     )
-    out_dir = run_out_dir
-    frontier_json = [
-        {
-            "text": c.text,
-            "refusal": c.refusal,
-            "completion": c.completion,
-            "meta": c.meta,
-            "hash": c.hash(),
-        }
-        for c in opt_result.frontier
-    ]
-    population_json = [
-        {
-            "text": c.text,
-            "refusal": c.refusal,
-            "completion": c.completion,
-            "meta": c.meta,
-            "hash": c.hash(),
-        }
-        for c in opt_result.population
-    ]
-    with open(out_dir / "optimization_frontier.json", "w") as f:
-        json.dump(frontier_json, f, indent=2)
-    with open(out_dir / "optimization_population.json", "w") as f:
-        json.dump(population_json, f, indent=2)
+
+    # Evaluate final frontier on test set
+    logger.info("[CAUSAL][TEST] Evaluating final frontier on test set (size=%d)", len(opt_result.frontier))
+    test_eval_fn = build_full_eval_fn(
+        examples_by_task,
+        benign_metric_factory=benign_full_factory,
+        harmful_metric_factory=harmful_full_factory,
+        agent=agent,
+        split='test',
+    )
+    test_results = []
+    for cand in opt_result.frontier:
+        try:
+            r, c, extra = test_eval_fn(cand.text)
+            test_results.append({
+                "hash": cand.hash(),
+                "text": cand.text,
+                "refusal_test": r,
+                "completion_test": c,
+                **extra,
+            })
+        except Exception as e:
+            logger.warning("[CAUSAL][TEST] Failed to evaluate candidate %s: %s", cand.hash(), e)
+            test_results.append({
+                "hash": cand.hash(),
+                "text": cand.text,
+                "refusal_test": 0.0,
+                "completion_test": 0.0,
+                "error": str(e),
+            })
+    logger.info("[CAUSAL][TEST] Test evaluation completed for %d candidates", len(test_results))
+
     summary = {
         "n_seeds": len(records),
         "generations": opt_result.generations,
@@ -152,13 +162,16 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         "frontier_size": len(opt_result.frontier),
         "config": asdict(config),
         "segment_effects": opt_result.segment_effects,  # Added segment effects
+        "test_results": test_results,
     }
-    with open(out_dir / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
-    # Dump per-generation full eval metrics if available
-    if opt_result.per_generation_full_eval:
-        with open(out_dir / "frontier_full_eval_per_generation.json", "w") as f:
-            json.dump(opt_result.per_generation_full_eval, f, indent=2)
+
+    write_optimization_outputs(
+        Path(run_out_dir) / "final",
+        frontier=opt_result.frontier,
+        population=opt_result.population,
+        summary=summary,
+        per_generation_full_eval=opt_result.per_generation_full_eval,
+    )
     logger.info("[CAUSAL][OPT] Summary: %s", summary)
-    logger.info("[CAUSAL][OPT] Results written to %s", out_dir.resolve())
+    logger.info("[CAUSAL][OPT] Results written to %s", run_out_dir.resolve())
     logger.info("[CAUSAL][OPT] Finished optimization: frontier=%d evals=%d", len(opt_result.frontier), opt_result.num_evaluations)

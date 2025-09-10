@@ -16,6 +16,8 @@ import random
 import json
 import ast
 import os
+import csv
+from pathlib import Path
 from tqdm import tqdm
 
 import dspy 
@@ -93,8 +95,9 @@ def optimize_instructions(
     initial_texts: Iterable[str],
     main_lm: dspy.BaseLM,
     config: CausalOptimizationConfig,
-    eval_fn: EvalFn,
-    full_eval_fn: Optional[EvalFn] = None,
+    train_eval_fn: EvalFn,
+    dev_eval_fn: EvalFn,
+    checkpoint_dir: str | os.PathLike[str],
 ) -> OptimizationResult:
     """
     Optimize instructions via multi-objective search over refusal and completion.
@@ -105,7 +108,7 @@ def optimize_instructions(
     """
     cfg = config
     rng = random.Random(cfg.random_seed)
-    eval_fn = eval_fn  # Real eval should be injected by caller.
+    train_eval_fn = train_eval_fn  # Real eval should be injected by caller.
     segments_cache: Dict[str, Dict[str, str]] = {}
     segment_effect_sums: Dict[str, Dict[str, float]] = {}
     low_info_alternatives: Dict[str, str] = {
@@ -280,6 +283,34 @@ def optimize_instructions(
 
     # key -> candidate mapping
     seen_cache: dict[str, Candidate] = {}
+
+    def _update_effects(intervention_key: str, parent: Candidate, child: Candidate):
+        rec = segment_effect_sums.setdefault(intervention_key, {"count": 0.0, "effect_on_refusal_sum": 0.0, "effect_on_completion_sum": 0.0})
+        rec["count"] += 1.0
+        rec["effect_on_refusal_sum"] += child.refusal - parent.refusal
+        rec["effect_on_completion_sum"] += child.completion - parent.completion
+
+    def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None):
+        k = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
+        if k in seen_cache:
+            return None
+        refusal, completion, extra = train_eval_fn(t)
+        meta = {"reason": reason, **extra}
+        if mutation_meta:
+            meta.update(mutation_meta)
+        cand = Candidate(text=t, refusal=refusal, completion=completion, meta=meta)
+        seen_cache[k] = cand
+        return cand
+
+    # Initialize population with seeds
+    seeds_list = list(initial_texts)
+    for t in seeds_list:
+        score_and_register_candidate(t, "seed")
+        # No effect update for seeds
+        if cfg.max_candidates_evaluated and len(seen_cache) >= cfg.max_candidates_evaluated:
+            break
+    n_seeds = len(seeds_list)
+
     population: list[Candidate] = list(seen_cache.values())
     # Initial evaluation
     frontier = pareto_frontier(population)
@@ -292,44 +323,27 @@ def optimize_instructions(
         frontier = frontier[:max_frontier]
     num_evaluations = len(population)
 
-    def _update_effects(intervention_key: str, parent: Candidate, child: Candidate):
-        rec = segment_effect_sums.setdefault(intervention_key, {"count": 0.0, "effect_on_refusal_sum": 0.0, "effect_on_completion_sum": 0.0})
-        rec["count"] += 1.0
-        rec["effect_on_refusal_sum"] += child.refusal - parent.refusal
-        rec["effect_on_completion_sum"] += child.completion - parent.completion
+    logger.info("[OPT] Seed: population=%d frontier=%d", len(population), len(frontier))
 
-    def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None):
-        k = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
-        if k in seen_cache:
-            return None
-        refusal, completion, extra = eval_fn(t)
-        meta = {"reason": reason, **extra}
-        if mutation_meta:
-            meta.update(mutation_meta)
-        cand = Candidate(text=t, refusal=refusal, completion=completion, meta=meta)
-        seen_cache[k] = cand
-        return cand
-
-    for t in initial_texts:
-        score_and_register_candidate(t, "seed")
-        # No effect update for seeds
-        if cfg.max_candidates_evaluated and len(seen_cache) >= cfg.max_candidates_evaluated:
-            break
-
-    logger.info("[OPT] Seed population=%d frontier=%d", len(population), len(frontier))
-
-    # Store per-generation full frontier evaluations (if full_eval_fn provided)
+    # Store per-generation full frontier evaluations (if dev_eval_fn provided)
     per_generation_full_eval: list[dict] = []
+    
+    # Lazy import to avoid cycles
+    from .io_utils import write_optimization_outputs  # type: ignore
 
     for gen in tqdm(range(1, cfg.max_generations + 1), desc="Generations", unit="gen"):
-        # If eval_fn supports per-generation resampling (minibatch stochastic fitness) invoke it now.
+        # If train_eval_fn supports per-generation resampling (minibatch stochastic fitness) invoke it now.
         try:
-            if hasattr(eval_fn, "resample") and callable(getattr(eval_fn, "resample")):
-                getattr(eval_fn, "resample")(gen)
+            if hasattr(train_eval_fn, "resample") and callable(getattr(train_eval_fn, "resample")):
+                getattr(train_eval_fn, "resample")(gen)
         except Exception as e:  # noqa: BLE001
             logger.warning("[OPT] Minibatch resample failed at generation %d (%s)", gen, e)
         # Generate mutations from frontier
         for parent_cand in tqdm(list(frontier), desc=f"Gen {gen} Candidates", unit="cand"):
+            # stop if we've reached max evals
+            if cfg.max_candidates_evaluated and num_evaluations >= cfg.max_candidates_evaluated:
+                break
+
             logger.info("[OPT] Gen %d: processing candidate r=%.2f c=%.2f text=%s", gen, parent_cand.refusal, parent_cand.completion, parent_cand.text)
             segment_instruction(parent_cand.text)
 
@@ -346,6 +360,15 @@ def optimize_instructions(
             logger.info("[OPT] Gen %d: generated %d mutations", gen, len(new_specs))
 
             # Generate new candidates from specs
+            new_children = []
+            children_dir = Path(checkpoint_dir) / f"gen_{gen:03d}" / "children"
+            children_dir.mkdir(parents=True, exist_ok=True)
+            parent_hash = parent_cand.hash()
+            children_file = children_dir / "children.csv"
+            with open(children_file, "a", newline='') as f:
+                fieldnames = ["text", "refusal", "completion", "meta", "hash", "parent_hash", "generation"]
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
             for spec in tqdm(new_specs, desc="Mutations", unit="mut"):
                 if cfg.max_candidates_evaluated and num_evaluations >= cfg.max_candidates_evaluated:
                     break
@@ -354,10 +377,26 @@ def optimize_instructions(
                     f"gen{gen}", 
                     mutation_meta={k: v for k, v in spec.items() if k != "text"}
                 )
-                if child_cand and spec.get("intervention_key") and parent_cand:
-                    _update_effects(spec["intervention_key"], parent_cand, child_cand)
+                if child_cand:
+                    new_children.append(child_cand)
+                    if spec.get("intervention_key"):
+                        _update_effects(spec["intervention_key"], parent_cand, child_cand)
+                    with open(children_file, "a", newline='') as f:
+                        fieldnames = ["text", "refusal", "completion", "meta", "hash", "parent_hash", "generation"]
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writerow({
+                            "text": child_cand.text,
+                            "refusal": child_cand.refusal,
+                            "completion": child_cand.completion,
+                            "meta": json.dumps(child_cand.meta),
+                            "hash": child_cand.hash(),
+                            "parent_hash": parent_hash,
+                            "generation": gen
+                        })
                 num_evaluations += 1
+            logger.info("[OPT] Gen %d: evaluated %d new candidates from parent %s", gen, len(new_children), parent_hash)
 
+        # Refresh population and frontier
         population = list(seen_cache.values())
         frontier = pareto_frontier(population)
         # Enforce max frontier size each generation
@@ -373,37 +412,83 @@ def optimize_instructions(
             max(c.completion for c in frontier),
         )
 
-        # After each generation, evaluate current frontier on full eval set (if provided)
-        if full_eval_fn is not None:
-            gen_full_metrics: list[dict[str, Any]] = []
-            logger.info("[OPT][FULL] Evaluating frontier on full eval set (gen=%d, size=%d)", gen, len(frontier))
-            for cand in frontier:
-                try:
-                    full_r, full_c, extra_full = full_eval_fn(cand.text)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[OPT][FULL] Full evaluation failed for candidate %s (%s)", cand.hash(), e)
-                    full_r, full_c, extra_full = 0.0, 0.0, {"error": str(e)}
-                # Attach latest full metrics to candidate meta (namespaced by generation)
-                cand.meta.setdefault("full_eval", {})[f"gen_{gen}"] = {
-                    "refusal": full_r,
-                    "completion": full_c,
-                    **extra_full,
+        # Checkpoint population, frontier, and segment effects after generation finishes
+        base_dir = Path(checkpoint_dir) / f"gen_{gen:03d}" / "checkpoints"
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+
+            # Compute partial segment effects at this point in time
+            segment_effects_ckpt: Dict[str, Dict[str, float]] = {}
+            for key, rec in segment_effect_sums.items():
+                count = rec.get("count", 0.0) or 1.0
+                segment_effects_ckpt[key] = {
+                    "count": rec.get("count", 0.0),
+                    "avg_effect_on_refusal": rec.get("effect_on_refusal_sum", 0.0) / count,
+                    "avg_effect_on_completion": rec.get("effect_on_completion_sum", 0.0) / count,
                 }
-                gen_full_metrics.append({
-                    "gen": gen,
-                    "hash": cand.hash(),
-                    "text": cand.text,
-                    "refusal_full": full_r,
-                    "completion_full": full_c,
-                    "refusal_train": cand.refusal,
-                    "completion_train": cand.completion,
-                    "meta_extra": extra_full,
-                })
-            per_generation_full_eval.append({
+
+            ckpt_summary = {
                 "generation": gen,
+                "population_size": len(population),
                 "frontier_size": len(frontier),
-                "candidates": gen_full_metrics,
+                "evaluations": num_evaluations,
+                "n_seeds": n_seeds,
+                "best_refusal": max(c.refusal for c in frontier) if frontier else 0.0,
+                "best_completion": max(c.completion for c in frontier) if frontier else 0.0,
+                "segment_effects": segment_effects_ckpt or None,
+            }
+
+            write_optimization_outputs(
+                base_dir,
+                frontier=frontier,
+                population=population,
+                summary=ckpt_summary,
+                per_generation_full_eval=None,  # Don't save full eval yet
+            )
+            logger.info("[OPT][CKPT] Wrote generation %d checkpoint (pre-full-eval) to %s", gen, base_dir)
+        except Exception as e:
+            logger.warning("[OPT][CKPT] Failed to write pre-full-eval checkpoint for generation %d: %s", gen, e)
+
+        # After each generation, evaluate current frontier on full eval set (if provided)
+        gen_full_metrics: list[dict[str, Any]] = []
+        logger.info("[OPT][FULL] Evaluating frontier on full eval set (gen=%d, size=%d)", gen, len(frontier))
+        for cand in frontier:
+            try:
+                full_r, full_c, extra_full = dev_eval_fn(cand.text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[OPT][FULL] Full evaluation failed for candidate %s (%s)", cand.hash(), e)
+                full_r, full_c, extra_full = 0.0, 0.0, {"error": str(e)}
+            # Attach latest full metrics to candidate meta (namespaced by generation)
+            cand.meta.setdefault("full_eval", {})[f"gen_{gen}"] = {
+                "refusal": full_r,
+                "completion": full_c,
+                **extra_full,
+            }
+            gen_full_metrics.append({
+                "gen": gen,
+                "hash": cand.hash(),
+                "text": cand.text,
+                "refusal_full": full_r,
+                "completion_full": full_c,
+                "refusal_train": cand.refusal,
+                "completion_train": cand.completion,
+                "meta_extra": extra_full,
             })
+        per_generation_full_eval.append({
+            "generation": gen,
+            "frontier_size": len(frontier),
+            "candidates": gen_full_metrics,
+        })
+
+        # Save the full eval result after running the whole eval
+        try:
+            full_eval_file = base_dir / "frontier_full_eval_per_generation.json"
+            with open(full_eval_file, "w") as f:
+                json.dump(per_generation_full_eval, f, indent=2)
+            logger.info("[OPT][FULL] Saved full eval for generation %d to %s", gen, full_eval_file)
+        except Exception as e:
+            logger.warning("[OPT][FULL] Failed to save full eval for generation %d: %s", gen, e)
+
         if all(c.refusal >= cfg.target_refusal and c.completion >= cfg.target_completion for c in frontier):
             logger.info("[OPT] Targets reached by entire frontier at generation %d.", gen)
             break

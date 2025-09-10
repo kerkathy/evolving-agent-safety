@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Dict, Tuple, Callable, Optional
 import random as _global_random  # for typing/reference
+import random
 import logging
 
 from src.agent import WebReActAgent
@@ -23,7 +24,7 @@ except Exception:  # pragma: no cover - defensive
     build_dspy_examples = None  # type: ignore
 
 
-def load_eval_examples(config, *, full: bool = False) -> Dict[str, List]:
+def load_eval_examples(config, *, full: bool = False) -> Dict[str, Dict[str, List]]:
     """Load separate benign + harmful example slices for dual-metric eval.
 
     Args:
@@ -31,18 +32,18 @@ def load_eval_examples(config, *, full: bool = False) -> Dict[str, List]:
         full: if True, do NOT apply the training size limit (use all examples).
 
     Returns:
-        dict with keys 'benign' and 'harmful'. Empty lists if loaders unavailable.
+        dict with keys 'benign' and 'harmful', each containing 'train', 'eval', 'test' lists.
     """
-    out: Dict[str, List] = {"benign": [], "harmful": []}
+    out: Dict[str, Dict[str, List]] = {"benign": {"train": [], "eval": [], "test": []}, "harmful": {"train": [], "eval": [], "test": []}}
     if not (load_agentharm_data and build_dspy_examples):  # import failure
         logger.warning("[EVAL] Data loading modules unavailable; using heuristic eval only.")
         return out
-    limit = None if full else config.causal.optimization.train_data_size
+    limit = None if full else config.causal.optimization.max_data_size
     data_cfg = config.data
 
     common_kwargs = dict(
         behavior_ids=list(getattr(data_cfg, "behavior_ids", []) or []),
-        sample_ids=None,  # handle limit after building examples
+        sample_ids=getattr(data_cfg, "sample_ids", None),
         split=getattr(data_cfg, "split", "val"),
         detailed_behaviors=getattr(data_cfg, "detailed_behaviors", True),
         hint_included=getattr(data_cfg, "hint_included", False),
@@ -54,18 +55,37 @@ def load_eval_examples(config, *, full: bool = False) -> Dict[str, List]:
         examples = build_dspy_examples(raw)
         if limit is not None and len(examples) > limit:
             examples = examples[:limit]
-        out[task_name] = examples
+        if not examples:
+            out[task_name] = {"train": [], "eval": [], "test": []}
+            continue
+        # Split into train, eval, test
+        train_fraction = getattr(data_cfg, "train_fraction", 0.8)
+        random_seed = getattr(data_cfg, "shuffle_seed", 0)
+        total = len(examples)
+        train_eval_count = int(total * train_fraction)
+        train_count = train_eval_count * 8 // 10  # 80% of train_eval for train
+        eval_count = train_eval_count - train_count
+        test_count = total - train_eval_count
+        if train_count < 1 or eval_count < 1 or test_count < 1:
+            raise ValueError(f"Not enough {task_name} examples ({total}) to split into train/eval/test with fractions {train_fraction}/(1-{train_fraction})")
+        random.seed(random_seed)
+        random.shuffle(examples)
+        train = examples[:train_count]
+        eval_ = examples[train_count:train_count + eval_count]
+        test_ = examples[train_count + eval_count:]
+        out[task_name] = {"train": train, "eval": eval_, "test": test_}
         logger.info(
-            "[EVAL] Loaded %d %s eval examples (limit=%s)", len(examples), task_name, limit if limit is not None else "ALL"
+            "[EVAL] Loaded %d %s eval examples (train=%d, eval=%d, test=%d)", total, task_name, len(train), len(eval_), len(test_)
         )
     return out
 
 
 def build_dual_agent_instruction_eval_fn(
-    examples_by_task: Dict[str, List],
+    examples_by_task: Dict[str, Dict[str, List]],
     benign_metric_factory: AgentHarmMetricFactory,
     harmful_metric_factory: AgentHarmMetricFactory,
     agent: WebReActAgent,
+    split: str = 'train',
 ):
     """Return callable(instr) -> (refusal_mean, completion_mean, extra_meta) using dual datasets.
 
@@ -76,8 +96,8 @@ def build_dual_agent_instruction_eval_fn(
     We run two independent evaluation passes per candidate instruction to keep
     factory state isolated and reduce cross-contamination of records.
     """
-    benign_examples = list(examples_by_task["benign"])
-    harmful_examples = list(examples_by_task["harmful"])
+    benign_examples = list(examples_by_task["benign"][split])
+    harmful_examples = list(examples_by_task["harmful"][split])
     if not benign_examples:
         raise ValueError("Dual eval requires at least one benign example for completion metric.")
     if not harmful_examples:
@@ -164,17 +184,18 @@ class MiniBatchDualAgentInstructionEvaluator:
 
     def __init__(
         self,
-        full_examples_by_task: Dict[str, List],
+        examples_by_task: Dict[str, Dict[str, List]],
         benign_metric_factory: AgentHarmMetricFactory,
         harmful_metric_factory: AgentHarmMetricFactory,
         agent: WebReActAgent,
         minibatch_size: int,
-    rng: Optional[_global_random.Random],
+        rng: Optional[_global_random.Random],
+        split: str = 'train',
     ) -> None:
         import random as _random  # local import to avoid global dependency if unused
 
-        self.pool_benign = list(full_examples_by_task["benign"])  # copy
-        self.pool_harmful = list(full_examples_by_task["harmful"])
+        self.pool_benign = list(examples_by_task["benign"][split])  # copy
+        self.pool_harmful = list(examples_by_task["harmful"][split])
         if not self.pool_benign or not self.pool_harmful:
             raise ValueError("Minibatch evaluator requires non-empty benign and harmful pools.")
         self.agent = agent
@@ -200,8 +221,12 @@ class MiniBatchDualAgentInstructionEvaluator:
         # Sample without replacement; if pool smaller than size use full pool
         bsize = min(self.minibatch_size, len(self.pool_benign))
         hsize = min(self.minibatch_size, len(self.pool_harmful))
-        self._benign_batch = self.rng.sample(self.pool_benign, bsize) if len(self.pool_benign) > bsize else self.pool_benign
-        self._harmful_batch = self.rng.sample(self.pool_harmful, hsize) if len(self.pool_harmful) > hsize else self.pool_harmful
+        if bsize != hsize:
+            raise ValueError("Minibatch evaluator requires equal benign and harmful minibatch sizes.")
+        # use the same idx for both benign and harmful to keep eval fair
+        indices = self.rng.sample(range(len(self.pool_benign)), bsize)
+        self._benign_batch = [self.pool_benign[i] for i in indices]
+        self._harmful_batch = [self.pool_harmful[i] for i in indices]
         # Rebuild dspy.Evaluate objects with new devsets
         self._benign_eval = dspy.Evaluate(
             devset=self._benign_batch,
@@ -278,41 +303,45 @@ class MiniBatchDualAgentInstructionEvaluator:
 
 
 def build_minibatch_dual_agent_instruction_eval_fn(
-    full_examples_by_task: Dict[str, List],
+    examples_by_task: Dict[str, Dict[str, List]],
     benign_metric_factory: AgentHarmMetricFactory,
     harmful_metric_factory: AgentHarmMetricFactory,
     agent: WebReActAgent,
     minibatch_size: int,
     rng=None,
+    split: str = 'train',
 ):
     """Factory returning a MiniBatchDualAgentInstructionEvaluator instance."""
     return MiniBatchDualAgentInstructionEvaluator(
-        full_examples_by_task,
+        examples_by_task,
         benign_metric_factory=benign_metric_factory,
         harmful_metric_factory=harmful_metric_factory,
         agent=agent,
         minibatch_size=minibatch_size,
         rng=rng,
+        split=split,
     )
 
 
 def build_full_eval_fn(
-    examples_by_task_full: Dict[str, List],
+    examples_by_task: Dict[str, Dict[str, List]],
     benign_metric_factory: AgentHarmMetricFactory,
     harmful_metric_factory: AgentHarmMetricFactory,
     agent: WebReActAgent,
+    split: str = 'eval'
 ) -> Callable[[str], Tuple[float, float, Dict[str, int]]]:
-    """Construct a full evaluation function on the entire eval set.
+    """Construct a full evaluation function on the specified split.
 
     Mirrors build_dual_agent_instruction_eval_fn but intended for larger eval
     slices (no training-size truncation). Factories are passed as NEW instances
     by the caller to avoid cross contamination with train-limited eval.
     """
     return build_dual_agent_instruction_eval_fn(
-        examples_by_task_full,
+        examples_by_task,
         benign_metric_factory=benign_metric_factory,
         harmful_metric_factory=harmful_metric_factory,
         agent=agent,
+        split=split
     )
 
 

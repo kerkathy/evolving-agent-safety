@@ -67,7 +67,6 @@ class CausalConfig:
     param_key: str = "WebReActAgent.react.predict.signature.instructions"
     child_prefix: str = "eval_full_"
     max_collected_prompts: int = 200  # passed as limit
-    intervention_types: Sequence[str] = ("drop_instruction", "shuffle_order", "mask_step")
     seed: int = 42
     output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
     optimization: CausalOptimizationConfig | None = None       # Nested config for instruction optimization
@@ -77,7 +76,7 @@ class CausalOptimizationConfig:
     """Nested optimization settings specific to causal instruction search.
 
     Distinct from top-level OptimizationConfig used in baseline/batch runs.
-    Includes evaluation sampling controls (e.g., train_data_size) and
+    Includes evaluation sampling controls (e.g., max_data_size) and
     mutation / segmentation model configuration.
     """
     frontier_size: int = 16
@@ -86,7 +85,8 @@ class CausalOptimizationConfig:
     target_completion: float = 1.0
     target_refusal: float = 1.0
     max_candidates_evaluated: int | None = 500
-    train_data_size: int = 10          # How many dataset examples to use per candidate evaluation
+    max_data_size: int | None = None     # Clamp Max Dataset size (for debugging)
+    minibatch_size: int = 5            # How many examples to sample per eval step (<= max_data_size)
     segment_lm_name: str = "openai/gpt-4o-mini"
     segment_model_api_base: str = "https://api.openai.com/v1"
 
@@ -95,8 +95,8 @@ class CausalOptimizationConfig:
             self.frontier_size = 1
         if self.max_generations <= 0:
             self.max_generations = 1
-        if self.train_data_size <= 0:
-            self.train_data_size = 1
+        if self.minibatch_size <= 0:
+            self.minibatch_size = 1
 
 @dataclass(slots=True)
 class Config:
