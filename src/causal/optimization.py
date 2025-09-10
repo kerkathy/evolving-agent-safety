@@ -283,6 +283,13 @@ def optimize_instructions(
     population: list[Candidate] = list(seen_cache.values())
     # Initial evaluation
     frontier = pareto_frontier(population)
+    # Enforce max frontier size at initialization
+    try:
+        max_frontier = int(getattr(cfg, "frontier_size", 0) or 0)
+    except Exception:
+        max_frontier = 0
+    if max_frontier > 0 and len(frontier) > max_frontier:
+        frontier = frontier[:max_frontier]
     num_evaluations = len(population)
 
     def _update_effects(intervention_key: str, parent: Candidate, child: Candidate):
@@ -353,6 +360,9 @@ def optimize_instructions(
 
         population = list(seen_cache.values())
         frontier = pareto_frontier(population)
+        # Enforce max frontier size each generation
+        if max_frontier > 0 and len(frontier) > max_frontier:
+            frontier = frontier[:max_frontier]
         logger.info(
             "[OPT] Gen %d: population=%d frontier=%d evals=%d best(max r=%.2f c=%.2f)",
             gen,

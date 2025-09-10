@@ -49,7 +49,7 @@ causal:
   output_dir: "results/causal_optimization"
   # --- Optimization mode switches ---
   optimization:
-    population_size: 1           # Larger than default 16 for more diversity
+    frontier_size: 1           # Larger than default 16 for more diversity
     max_generations: 1           # Slightly higher than default 10
     random_seed: 42
     target_completion: 1.0

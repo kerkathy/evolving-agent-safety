@@ -80,7 +80,7 @@ class CausalOptimizationConfig:
     Includes evaluation sampling controls (e.g., train_data_size) and
     mutation / segmentation model configuration.
     """
-    population_size: int = 16
+    frontier_size: int = 16
     max_generations: int = 10
     random_seed: int = 42
     target_completion: float = 1.0
@@ -91,8 +91,8 @@ class CausalOptimizationConfig:
     segment_model_api_base: str = "https://api.openai.com/v1"
 
     def clamp(self) -> None:
-        if self.population_size <= 0:
-            self.population_size = 1
+        if self.frontier_size <= 0:
+            self.frontier_size = 1
         if self.max_generations <= 0:
             self.max_generations = 1
         if self.train_data_size <= 0:
