@@ -18,8 +18,8 @@ from typing import Literal, Sequence
 
 @dataclass(slots=True)
 class AgentHarmDataConfig:
-    task_name: Literal["harmful", "benign", "chat"] = "harmful"
-    split: Literal["val", "test_private", "test_public"] = "val"
+    task_name: Literal["harmful", "benign", "chat"]
+    split: Literal["val", "test_private", "test_public"]
     behavior_ids: Sequence[str] | None = None
     sample_ids: Sequence[str] | None = None
     detailed_behaviors: bool | None = True
@@ -34,7 +34,7 @@ class AgentHarmDataConfig:
 
 @dataclass(slots=True)
 class ModelConfig:
-    lm_name: str = "openai/gpt-5-nano"
+    lm_name: str
     lm_temperature: float = 1.0
     max_tokens: int = 2048
     refusal_judge_model: str = "openai/gpt-5-nano"
@@ -152,7 +152,10 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
         # Split by comma and strip whitespace
         data_dict["sample_ids"] = [s.strip() for s in sample_ids.split(",") if s.strip()]
     data = AgentHarmDataConfig(**data_dict)
+
     models_dict = dict(raw["models"])
+    if models_dict["lm_name"] is None:
+        raise ValueError("lm_name must be provided in the models section of the config")
     # Optionally convert seed to int if present and not None
     if "seed" in models_dict and models_dict["seed"] is not None:
         try:
