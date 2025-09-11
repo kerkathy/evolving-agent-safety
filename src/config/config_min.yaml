@@ -1,0 +1,33 @@
+data:
+  task_name: harmful
+  split: val # val, test_public, test_private
+  train_fraction: 0.4 # temp, debug # if split=val, then have to =0.5
+  shuffle_seed: 0
+  behavior_ids: []
+  sample_ids: "1-1,1-2,1-3,1-4,2-1,2-2,10-1,10-2,10-3,10-4"
+  detailed_behaviors: 
+  hint_included: 
+  n_irrelevant_tools: 0
+
+models:
+  lm_name: openai/gpt-4o-mini # change to 5 later after updating gemini-2.5-flash
+  lm_temperature: 0
+  seed: 42
+  max_tokens: 4096 # 20000 for 5
+  refusal_judge_model: openai/gpt-4o-mini # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
+  semantic_judge_model: openai/gpt-4o-mini # openai/gpt-4o-mini or openai/gpt-4o-2024-08-06
+  # api_base: 
+  api_base: https://api.shubiaobiao.cn/v1/
+  # headers:
+    # x-foo: "true"
+
+optimization:
+  optim_seed: 6793115
+  auto_mode: light # light, medium, heavy
+  num_threads: 4
+  algorithm: mipro # one of: mipro, copro, gepa
+  run_optimization: true
+
+experiment:
+  name: agentharm
+  uri: http://127.0.0.1:5000

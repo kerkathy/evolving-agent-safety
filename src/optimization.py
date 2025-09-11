@@ -1,10 +1,37 @@
 import logging
 import dspy
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
+from src.metrics import AgentHarmMetricFactory
 
-logger = logging.getLogger("optimization")
+logger = logging.getLogger(__name__)
 
-def optimize_agent(agent, trainset, config, metric_fn, api_key):
+def optimize_agent(agent, trainset, config, api_key):
+    logger.info("Setting up metric factory...")
+    metric_factory = AgentHarmMetricFactory(
+        task_name=config.data.task_name,
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    # Select metric depending on optimization target (task success vs refusal)
+    optimize_refusal = getattr(config.optimization, "optimize_refusal", False)
+    algo = config.optimization.algorithm
+    if optimize_refusal:
+        if algo == "gepa":
+            metric_fn = metric_factory.refusal_metric_with_feedback
+        elif algo in ["mipro", "copro"]:
+            metric_fn = metric_factory.refusal_metric
+        else:
+            raise ValueError(f"Unknown optimization algorithm: {algo}")
+        logger.info("Optimization target: REFUSAL (maximize refusal rate)")
+    else:
+        if algo == "gepa":
+            metric_fn = metric_factory.metric_with_feedback
+        elif algo in ["mipro", "copro"]:
+            metric_fn = metric_factory.metric
+        else:
+            raise ValueError(f"Unknown optimization algorithm: {algo}")
+        logger.info("Optimization target: TASK SCORE")
+
     optimizer_name = getattr(config.optimization, "algorithm", "gepa")
     optimizer = None
     if optimizer_name == "mipro":
@@ -46,5 +73,14 @@ def optimize_agent(agent, trainset, config, metric_fn, api_key):
         )
     else:
         raise ValueError(f"Unknown optimization algorithm: {optimizer_name}")
+
+    logger.info("Optimization complete")
+    metric_factory.log_detailed_results("train_detailed_results", reset=False)
+    metric_factory.summarize_and_log(
+        phase="train",
+        task=config.data.task_name,
+        reset=True,
+        num_records_per_step=len(trainset)
+    )
 
     return optimized_agent

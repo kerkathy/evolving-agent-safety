@@ -237,7 +237,7 @@ class AgentHarmMetricFactory:
         feedback = self._records[-1].get("refusal_details", [])
         return dspy.Prediction(score=result["refusal"], feedback=feedback)
 
-    def _calc_and_log_summary(self, phase, records, step=None):
+    def _calc_and_log_summary(self, phase, task, records, step=None):
         task_scores = [r["task_score"] for r in records]
         refusals = [r["refusal"] for r in records]
         summary = {
@@ -249,17 +249,18 @@ class AgentHarmMetricFactory:
         }
         mlflow_log_metrics(
             {
-                f"{phase}_task_score_mean": summary["task_score_mean"],
-                f"{phase}_task_score_std": summary["task_score_std"],
-                f"{phase}_refusal_rate": summary["refusal_rate"],
-                f"{phase}_refusal_std": summary["refusal_std"],
+                f"{phase}_{task}_task_score_mean": summary["task_score_mean"],
+                f"{phase}_{task}_task_score_std": summary["task_score_std"],
+                f"{phase}_{task}_refusal_rate": summary["refusal_rate"],
+                f"{phase}_{task}_refusal_std": summary["refusal_std"],
             },
             run_id=self._current_run_id,
             step=step
         )
         self.logger.info(
-            "Summary [%s]: n=%d task_score=%.4f±%.4f refusal_rate=%.3f±%.4f",
+            "Summary [%s %s]: n=%d task_score=%.4f±%.4f refusal_rate=%.3f±%.4f",
             phase,
+            task,
             summary["n"],
             summary["task_score_mean"],
             summary["task_score_std"],
@@ -268,7 +269,14 @@ class AgentHarmMetricFactory:
         )
         return summary
 
-    def summarize_and_log(self, phase, reset: bool = False, num_records_per_step: int = -1) -> dict:
+    def summarize_and_log(self, phase, task, reset: bool = False, num_records_per_step: int = -1, step = 0) -> dict:
+        """
+        Summarize the collected records in self._records and log to MLflow.
+        If num_records_per_step > 0, will log summaries at intervals of that many records.
+        If reset is True, clears the records after summarization.
+        If step is provided, it will be used as the MLflow logging step.
+        """
+        self.logger.info("Summarizing %d records for phase=%s task=%s num_records_per_step=%d step=%d", len(self._records), phase, task, num_records_per_step, step)
         with self._lock:
             if not self._records:
                 return {}
@@ -279,11 +287,11 @@ class AgentHarmMetricFactory:
                     start = step_idx * num_records_per_step
                     end = start + num_records_per_step
                     step_records = self._records[start:end]
-                    summary = self._calc_and_log_summary(phase, step_records, step=step_idx)
+                    summary = self._calc_and_log_summary(phase, task, step_records, step=step_idx)
                     summaries[step_idx] = summary
                 return summaries
             else:
-                summary = self._calc_and_log_summary(phase, self._records)
+                summary = self._calc_and_log_summary(phase, task, self._records, step=step)
 
             if reset:
                 self._records.clear()

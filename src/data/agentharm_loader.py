@@ -128,6 +128,17 @@ def build_dspy_examples(raw_data: List[dict]) -> list[dspy.Example]:
         examples.append(example.with_inputs("question", "functions"))
     return examples
 
+def split_indices(
+    indices: list[int], train_fraction: float, seed: int
+) -> tuple[list[int], list[int]]:
+    """Split examples into train/dev/test (50/50 split of the non-train remainder)."""
+    rnd = random.Random(seed)
+    rnd.shuffle(indices)
+    total = len(indices)
+    train_size = int(train_fraction * total)
+    train_idx = indices[:train_size]
+    test_idx = indices[train_size:]
+    return train_idx, test_idx
 
 def split_examples(
     examples: list[dspy.Example], train_fraction: float, seed: int
@@ -147,4 +158,5 @@ __all__ = [
     "load_agentharm_data",
     "build_dspy_examples",
     "split_examples",
+    "split_indices",
 ]

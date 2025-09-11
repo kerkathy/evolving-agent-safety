@@ -1,8 +1,8 @@
 mlartifacts/
 mlruns/
 results/
-data/
-examples/
+.data/
+.examples/
 mydb.sqlite
 
 # Byte-compiled / optimized / DLL files

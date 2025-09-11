@@ -17,8 +17,7 @@ import dspy
 import mlflow
 
 from src.config import load_config, Config
-from src.data import load_agentharm_data, build_dspy_examples, split_examples
-from src.metrics import AgentHarmMetricFactory
+from src.data import load_agentharm_data, build_dspy_examples, split_indices
 from src.agent import WebReActAgent
 from src.adapter import FunctionCallAdapter
 from src.utils.logging_setup import setup_logging, mlflow_setup
@@ -43,27 +42,47 @@ logging.getLogger("trajectory_to_messages").setLevel(logging_level)
 
 def prepare_data(config):
     cfg = config.data
-    raw_data = load_agentharm_data(
+    main_task = cast(Literal["harmful", "benign", "chat"], cfg.task_name)
+    another_task = "benign" if main_task == "harmful" else "harmful"
+
+    main_raw_data = load_agentharm_data(
         behavior_ids=list(cfg.behavior_ids or []),
         sample_ids=list(cfg.sample_ids or []),
-        task_name=cfg.task_name,
+        task_name=main_task,
         split=cfg.split,
         detailed_behaviors=cfg.detailed_behaviors,
         hint_included=cfg.hint_included,
         n_irrelevant_tools=cfg.n_irrelevant_tools,
     )
-    examples = build_dspy_examples(raw_data)
-    trainset, devset = split_examples(
-        examples, train_fraction=cfg.train_fraction, seed=cfg.shuffle_seed
+    examples = build_dspy_examples(main_raw_data)
+
+    another_raw_data = load_agentharm_data(
+        behavior_ids=list(cfg.behavior_ids or []),
+        sample_ids=list(cfg.sample_ids or []),
+        task_name=another_task,
+        split=cfg.split,
+        detailed_behaviors=cfg.detailed_behaviors,
+        hint_included=cfg.hint_included,
+        n_irrelevant_tools=cfg.n_irrelevant_tools,
     )
+    another_examples = build_dspy_examples(another_raw_data)
+
+    train_idx, test_idx = split_indices(
+        list(range(len(examples))), train_fraction=cfg.train_fraction, seed=cfg.shuffle_seed
+    )
+    trainset = [examples[i] for i in train_idx]
+    testset = {"harmful": [], "benign": []}
+    testset[main_task] = [examples[i] for i in test_idx]
+    testset[another_task] = [another_examples[i] for i in test_idx]
+
     logger.info(
-        "Loaded %d examples (task=%s) | train=%d dev=%d",
+        "Loaded %d examples (task=%s) | train=%d test=%d",
         len(examples),
         cfg.task_name,
-        len(trainset),
-        len(devset),
+        len(train_idx),
+        len(test_idx),
     )
-    return trainset, devset
+    return trainset, testset
 
 
 def main():
@@ -90,56 +109,17 @@ def main():
     mlflow_setup(config.experiment.uri, experiment_name)
 
     # Language model setup with enhanced timeout and retry handling
-    # Custom adapter for better output parsing
     dspy.configure(
         lm=create_enhanced_dspy_lm(config.models, api_key), 
         adapter=FunctionCallAdapter()
     )
 
-    # Main logic
-    trainset, devset = prepare_data(config)
+    trainset, testset = prepare_data(config)
 
     logger.info("Compiling baseline agent...")
     agent = WebReActAgent()
-    logger.info("Setting up metric factory...")
-    metric_factory = AgentHarmMetricFactory(
-        task_name=config.data.task_name,
-        refusal_judge_model=config.models.refusal_judge_model,
-        semantic_judge_model=config.models.semantic_judge_model,
-    )
-    # Select metric depending on optimization target (task success vs refusal)
-    optimize_refusal = getattr(config.optimization, "optimize_refusal", False)
-    algo = config.optimization.algorithm
-    if optimize_refusal:
-        if algo == "gepa":
-            metric_fn = metric_factory.refusal_metric_with_feedback
-        elif algo in ["mipro", "copro"]:
-            metric_fn = metric_factory.refusal_metric
-        else:
-            raise ValueError(f"Unknown optimization algorithm: {algo}")
-        logger.info("Optimization target: REFUSAL (maximize refusal rate)")
-    else:
-        if algo == "gepa":
-            metric_fn = metric_factory.metric_with_feedback
-        elif algo in ["mipro", "copro"]:
-            metric_fn = metric_factory.metric
-        else:
-            raise ValueError(f"Unknown optimization algorithm: {algo}")
-        logger.info("Optimization target: TASK SCORE")
 
-    logger.info("Setting up evaluation...")
-    evaluate = dspy.Evaluate(
-        devset=devset,
-        metric=metric_fn,
-        num_threads=1,  # Use single thread to avoid async issues
-        display_progress=True,
-        display_table=0,
-        max_errors=999,
-        provide_traceback=True,
-    )
     params = config.as_flat_dict()
-
-    # Log config params once
     safe_params = {k: v for k, v in params.items() if isinstance(v, (int, float, str, bool))}
     mlflow.log_params(safe_params)
 
@@ -149,14 +129,8 @@ def main():
     if os.path.exists(__file__):
         mlflow.log_artifact(__file__, artifact_path="source_code")
 
-    # ---- Baseline Eval ----
-    logger.info("Evaluating baseline agent...")
-    evaluate(agent)
-    metric_factory.log_detailed_results("eval_baseline_detailed_results", reset=False)
-    metric_factory.summarize_and_log("eval_baseline", reset=True)
-
     # Baseline safety panel at step=0
-    evaluate_safety_panels(agent, config, step=0)
+    evaluate_safety_panels(agent, testset, config, step=0)
 
     # Stop if optimization is disabled
     if config.optimization.run_optimization is False:
@@ -165,17 +139,10 @@ def main():
     
     # ---- Optimization ----
     logger.info("Optimizing agent...")
-    optimized_agent = optimize_agent(agent, trainset, config, metric_fn, api_key)
-
-    # ---- Optimized Eval ----
-    metric_factory.reset()
-    logger.info("Evaluating optimized agent...")
-    evaluate(optimized_agent, metric=metric_fn)
-    metric_factory.log_detailed_results("eval_final_detailed_results", reset=False)
-    metric_factory.summarize_and_log("eval_final", reset=True)
+    optimized_agent = optimize_agent(agent, trainset, config, api_key)
 
     # Post-optimization safety panel at step=1
-    evaluate_safety_panels(optimized_agent, config, step=1)
+    evaluate_safety_panels(optimized_agent, testset, config, step=1)
 
     logger.info("Run complete")
 
