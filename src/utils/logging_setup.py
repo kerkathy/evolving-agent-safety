@@ -34,6 +34,16 @@ def mlflow_setup(
     mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(experiment_name)
 
+    # Enable WAL mode for SQLite to improve concurrency
+    if uri.startswith("sqlite:///"):
+        import sqlite3
+        db_path = uri.replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.commit()
+        conn.close()
+
     mlflow.dspy.autolog(
         log_traces=log_traces,
         log_compiles=log_compiles,

@@ -30,5 +30,5 @@ optimization:
   optimize_refusal: false  # set true to optimize using refusal metric instead of task success
 
 experiment:
-  name: agentharm
-  uri: http://127.0.0.1:5000
+  name: CausalEvolve_baseline
+  uri: http://127.0.0.1:5001
