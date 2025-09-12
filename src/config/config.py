@@ -22,6 +22,7 @@ class AgentHarmDataConfig:
     split: Literal["val", "test_private", "test_public"]
     behavior_ids: Sequence[str] | None = None
     sample_ids: Sequence[str] | None = None
+    testset_ids: Sequence[str] | None = None
     detailed_behaviors: bool | None = True
     hint_included: bool | None = False
     n_irrelevant_tools: int = 0
@@ -29,8 +30,10 @@ class AgentHarmDataConfig:
     train_fraction: float = 0.2  # portion of total examples used for train
 
     def validate(self) -> None:
-        if not 0.0 < self.train_fraction < 1.0:
+        if self.testset_ids is None and not 0.0 < self.train_fraction < 1.0:
             raise ValueError("train_fraction must be between 0 and 1 (exclusive)")
+        if self.testset_ids is not None and self.sample_ids is not None:
+            raise ValueError("Cannot set both testset_ids and sample_ids")
 
 @dataclass(slots=True)
 class ModelConfig:
@@ -63,12 +66,14 @@ class ExperimentConfig:
 @dataclass(slots=True)
 class CausalConfig:
     enabled: bool = False
+    collect_from: str | None = None  # Optional path to JSON file with ["react"]["predict"]["signature"]["instructions"] list
     run_name: str | None = None          # Explicit mlflow run name
     param_key: str = "WebReActAgent.react.predict.signature.instructions"
     child_prefix: str = "eval_full_"
     max_collected_prompts: int = 200  # passed as limit
     seed: int = 42
     output_dir: str = "results/causal"  # base directory; timestamped subdir created per run
+    resume_folder: str | None = None  # Optional path to previous run folder to resume from
     optimization: CausalOptimizationConfig | None = None       # Nested config for instruction optimization
 
 @dataclass(slots=True)
@@ -151,7 +156,12 @@ def load_config(config_path: str = "src/config/config.yaml") -> Config:
     if isinstance(sample_ids, str):
         # Split by comma and strip whitespace
         data_dict["sample_ids"] = [s.strip() for s in sample_ids.split(",") if s.strip()]
+    testset_ids = data_dict.get("testset_ids", None)
+    if isinstance(testset_ids, str):
+        # Split by comma and strip whitespace
+        data_dict["testset_ids"] = [s.strip() for s in testset_ids.split(",") if s.strip()]
     data = AgentHarmDataConfig(**data_dict)
+    data.validate()
 
     models_dict = dict(raw["models"])
     if models_dict["lm_name"] is None:

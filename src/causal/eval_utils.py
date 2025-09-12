@@ -59,23 +59,48 @@ def load_eval_examples(config, *, full: bool = False) -> Dict[str, Dict[str, Lis
             out[task_name] = {"train": [], "eval": [], "test": []}
             continue
         # Split into train, eval, test
-        train_fraction = getattr(data_cfg, "train_fraction", 0.8)
-        random_seed = getattr(data_cfg, "shuffle_seed", 0)
-        total = len(examples)
-        train_eval_count = int(total * train_fraction)
-        train_count = train_eval_count * 8 // 10  # 80% of train_eval for train
-        eval_count = train_eval_count - train_count
-        test_count = total - train_eval_count
-        if train_count < 1 or eval_count < 1 or test_count < 1:
-            raise ValueError(f"Not enough {task_name} examples ({total}) to split into train/eval/test with fractions {train_fraction}/(1-{train_fraction})")
-        random.seed(random_seed)
-        random.shuffle(examples)
-        train = examples[:train_count]
-        eval_ = examples[train_count:train_count + eval_count]
-        test_ = examples[train_count + eval_count:]
+        testset_ids = getattr(data_cfg, "testset_ids", None)
+        if testset_ids:
+            if getattr(data_cfg, "train_fraction", None) is not None:
+                raise ValueError("Cannot set train_fraction when testset_ids is set")
+            if getattr(data_cfg, "sample_ids", None) is not None:
+                raise ValueError("Cannot set sample_ids when testset_ids is set")
+            test_ids = testset_ids
+            test_examples = [e for e in examples if getattr(e, 'sample_id', None) in test_ids]
+            remaining_examples = [e for e in examples if getattr(e, 'sample_id', None) not in test_ids]
+            random_seed = getattr(data_cfg, "shuffle_seed", 0)
+            random.seed(random_seed)
+            random.shuffle(remaining_examples)
+            total_remaining = len(remaining_examples)
+            # Use default train_fraction = 0.8 for remaining
+            train_fraction = 0.8
+            train_eval_count = int(total_remaining * train_fraction)
+            train_count = train_eval_count * 8 // 10  # 80% of train_eval for train
+            eval_count = train_eval_count - train_count
+            if train_count < 1 or eval_count < 1:
+                raise ValueError(f"Not enough remaining {task_name} examples ({total_remaining}) to split into train/eval")
+            train = remaining_examples[:train_count]
+            eval_ = remaining_examples[train_count:train_count + eval_count]
+            test_ = test_examples
+            logger.info("Loaded test ids...")
+        else:
+            train_fraction = getattr(data_cfg, "train_fraction", 0.8)
+            random_seed = getattr(data_cfg, "shuffle_seed", 0)
+            total = len(examples)
+            train_eval_count = int(total * train_fraction)
+            train_count = train_eval_count * 8 // 10  # 80% of train_eval for train
+            eval_count = train_eval_count - train_count
+            test_count = total - train_eval_count
+            if train_count < 1 or eval_count < 1 or test_count < 1:
+                raise ValueError(f"Not enough {task_name} examples ({total}) to split into train/eval/test with fractions {train_fraction}/(1-{train_fraction})")
+            random.seed(random_seed)
+            random.shuffle(examples)
+            train = examples[:train_count]
+            eval_ = examples[train_count:train_count + eval_count]
+            test_ = examples[train_count + eval_count:]
         out[task_name] = {"train": train, "eval": eval_, "test": test_}
         logger.info(
-            "[EVAL] Loaded %d %s eval examples (train=%d, eval=%d, test=%d)", total, task_name, len(train), len(eval_), len(test_)
+            "[EVAL] Loaded %d %s eval examples (train=%d, eval=%d, test=%d)", len(examples), task_name, len(train), len(eval_), len(test_)
         )
     return out
 

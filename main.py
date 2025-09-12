@@ -67,20 +67,28 @@ def prepare_data(config):
     )
     another_examples = build_dspy_examples(another_raw_data)
 
-    train_idx, test_idx = split_indices(
-        list(range(len(examples))), train_fraction=cfg.train_fraction, seed=cfg.shuffle_seed
-    )
-    trainset = [examples[i] for i in train_idx]
+    trainset = []
     testset = {"harmful": [], "benign": []}
-    testset[main_task] = [examples[i] for i in test_idx]
-    testset[another_task] = [another_examples[i] for i in test_idx]
+
+    if cfg.testset_ids:
+        testset_ids = set(cfg.testset_ids)
+        testset[main_task] = [ex for ex in examples if ex.sample_id in testset_ids]
+        trainset = [ex for ex in examples if ex.sample_id not in testset_ids]
+        testset[another_task] = [ex for ex in another_examples if ex.sample_id in testset_ids]
+    else:
+        train_idx, test_idx = split_indices(
+            list(range(len(examples))), train_fraction=cfg.train_fraction, seed=cfg.shuffle_seed
+        )
+        trainset = [examples[i] for i in train_idx]
+        testset[main_task] = [examples[i] for i in test_idx]
+        testset[another_task] = [another_examples[i] for i in test_idx]
 
     logger.info(
         "Loaded %d examples (task=%s) | train=%d test=%d",
         len(examples),
         cfg.task_name,
-        len(train_idx),
-        len(test_idx),
+        len(trainset),
+        len(testset[main_task]),
     )
     return trainset, testset
 
@@ -105,7 +113,7 @@ def main():
     config: Config = load_config(config_path=args.config)
 
     # MLflow setup
-    experiment_name = f"{config.experiment.name}_{config.data.task_name}_{config.data.split}_detail_{config.data.detailed_behaviors}_hint_{config.data.hint_included}"
+    experiment_name = f"{config.experiment.name}_{config.data.task_name}_{config.data.split}"
     mlflow_setup(config.experiment.uri, experiment_name)
 
     # Language model setup with enhanced timeout and retry handling

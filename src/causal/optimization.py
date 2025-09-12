@@ -98,6 +98,10 @@ def optimize_instructions(
     train_eval_fn: EvalFn,
     dev_eval_fn: EvalFn,
     checkpoint_dir: str | os.PathLike[str],
+    initial_population: list[Candidate] | None = None,
+    initial_frontier: list[Candidate] | None = None,
+    start_generation: int = 0,
+    initial_segment_effects: Dict[str, Dict[str, float]] | None = None,
 ) -> OptimizationResult:
     """
     Optimize instructions via multi-objective search over refusal and completion.
@@ -302,28 +306,39 @@ def optimize_instructions(
         seen_cache[k] = cand
         return cand
 
-    # Initialize population with seeds
-    seeds_list = list(initial_texts)
-    for t in seeds_list:
-        score_and_register_candidate(t, "seed")
-        # No effect update for seeds
-        if cfg.max_candidates_evaluated and len(seen_cache) >= cfg.max_candidates_evaluated:
-            break
-    n_seeds = len(seeds_list)
-
-    population: list[Candidate] = list(seen_cache.values())
-    # Initial evaluation
-    frontier = pareto_frontier(population)
-    # Enforce max frontier size at initialization
+    # Enforce max frontier size
     try:
         max_frontier = int(getattr(cfg, "frontier_size", 0) or 0)
     except Exception:
         max_frontier = 0
-    if max_frontier > 0 and len(frontier) > max_frontier:
-        frontier = frontier[:max_frontier]
-    num_evaluations = len(population)
 
-    logger.info("[OPT] Seed: population=%d frontier=%d", len(population), len(frontier))
+    # Initialize population with seeds or resume from previous state
+    if initial_population is not None and initial_frontier is not None:
+        population = initial_population
+        frontier = initial_frontier
+        for cand in population:
+            seen_cache[cand.hash()] = cand
+        if initial_segment_effects:
+            segment_effect_sums = initial_segment_effects
+        n_seeds = 0  # Since we're resuming, seeds are already in population
+        num_evaluations = len(population)
+        if max_frontier > 0 and len(frontier) > max_frontier:
+            frontier = frontier[:max_frontier]
+        logger.info("[OPT] Resumed from generation %d: population=%d frontier=%d", start_generation, len(population), len(frontier))
+    else:
+        seeds_list = list(initial_texts)
+        for t in seeds_list:
+            score_and_register_candidate(t, "seed")
+            # No effect update for seeds
+            if cfg.max_candidates_evaluated and len(seen_cache) >= cfg.max_candidates_evaluated:
+                break
+        n_seeds = len(seeds_list)
+        population = list(seen_cache.values())
+        frontier = pareto_frontier(population)
+        num_evaluations = len(population)
+        if max_frontier > 0 and len(frontier) > max_frontier:
+            frontier = frontier[:max_frontier]
+        logger.info("[OPT] Seed: population=%d frontier=%d", len(population), len(frontier))
 
     # Store per-generation full frontier evaluations (if dev_eval_fn provided)
     per_generation_full_eval: list[dict] = []
@@ -331,7 +346,7 @@ def optimize_instructions(
     # Lazy import to avoid cycles
     from .io_utils import write_optimization_outputs  # type: ignore
 
-    for gen in tqdm(range(1, cfg.max_generations + 1), desc="Generations", unit="gen"):
+    for gen in tqdm(range(start_generation + 1, cfg.max_generations + 1), desc="Generations", unit="gen"):
         # If train_eval_fn supports per-generation resampling (minibatch stochastic fitness) invoke it now.
         try:
             if hasattr(train_eval_fn, "resample") and callable(getattr(train_eval_fn, "resample")):
