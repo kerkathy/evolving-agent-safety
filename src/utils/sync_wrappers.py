@@ -17,30 +17,15 @@ def asyncio_run_wrapper(async_func: Callable) -> Callable:
     
     @functools.wraps(async_func)
     def sync_wrapper(*args, **kwargs):
-        # Check if we're already in an event loop
         try:
-            # If we're in an event loop, we can't use asyncio.run()
-            loop = asyncio.get_running_loop()
-            # Create a new thread to run the async function
-            import concurrent.futures
-            import threading
-            
-            def run_in_thread():
-                # Create new event loop for this thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    return new_loop.run_until_complete(async_func(*args, **kwargs))
-                finally:
-                    new_loop.close()
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_thread)
-                return future.result()
-                
-        except RuntimeError:
-            # No event loop running, can use asyncio.run()
             return asyncio.run(async_func(*args, **kwargs))
+        except RuntimeError as e:
+            if "already running" in str(e).lower():
+                # If loop is already running, use it
+                loop = asyncio.get_running_loop()
+                return loop.run_until_complete(async_func(*args, **kwargs))
+            else:
+                raise
     
     return sync_wrapper
 

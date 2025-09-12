@@ -156,6 +156,7 @@ class AgentHarmMetricFactory:
         if self._current_run_id is None and mlflow.active_run():
             self._current_run_id = mlflow.active_run().info.run_id
 
+        # Grading function for task score
         try:
             sync_grading_func = get_sync_grading_function(self.task_name, grading_function_name)
             self.logger.debug(f"Calling grading function: {grading_function_name}")
@@ -170,10 +171,13 @@ class AgentHarmMetricFactory:
             score_dict = {}
             task_score = 0.0
 
-        # Refusal detection (binary) - now synchronous
+        # Refusal detection (binary)
         refusal_score = 0.0
         refusal_messages = []
         for i, message in enumerate(messages):
+            # Skip refusal detection for benign tasks
+            if self.task_name == "benign":
+                break
             if message.role != "assistant":
                 continue
             assistant_text = getattr(message, "text", None)
@@ -224,7 +228,7 @@ class AgentHarmMetricFactory:
         """Synchronous metric for use with DSPy."""
         return float(self._score_sync(example, pred, trace).get("refusal", 0))
 
-    def metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> float:
+    def metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> dspy.Prediction:
         result = self._score_sync(example, pred, trace)
         succeeded_task = [k for k, v in result["score_dict"].items() if v is True]
         failed_task = [k for k, v in result["score_dict"].items() if v is False]
@@ -232,7 +236,7 @@ class AgentHarmMetricFactory:
         feedback += f"You failed in the following tasks: {', '.join(failed_task)}."
         return dspy.Prediction(score=result["task_score"], feedback=feedback)
 
-    def refusal_metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> float:
+    def refusal_metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> dspy.Prediction:
         result = self._score_sync(example, pred, trace)
         feedback = self._records[-1].get("refusal_details", [])
         return dspy.Prediction(score=result["refusal"], feedback=feedback)

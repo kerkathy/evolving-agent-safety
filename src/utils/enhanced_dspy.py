@@ -29,7 +29,7 @@ class EnhancedDSPyLM(dspy.BaseLM):
         headers: Optional[dict] = None,
         temperature: float = 0.0,
         max_tokens: int = 2000,
-        timeout: float = 60.0,
+        timeout: float = 120.0,  # Increased timeout
         max_retries: int = 5,
         retry_delay: float = 1.0,
         seed: Optional[int] = None,
@@ -180,7 +180,7 @@ def create_enhanced_dspy_lm(config_models, api_key: str) -> EnhancedDSPyLM:
         "api_key": api_key,
         "temperature": config_models.lm_temperature,
         "max_tokens": config_models.max_tokens,
-        "timeout": 60.0,  # 60 second timeout
+        "timeout": 120.0,  # Increased from 60.0 to 120.0 seconds
         "max_retries": 5,  # 5 retries with exponential backoff
         "retry_delay": 1.0,  # Start with 1 second delay
     }
