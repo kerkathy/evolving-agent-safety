@@ -81,7 +81,54 @@ def _load_resume_state(resume_folder: Path) -> tuple[list[Candidate], list[Candi
     if summary_file.exists():
         with open(summary_file, 'r') as f:
             summary = json.load(f)
-        segment_effects = summary.get("segment_effects")
+        seg_eff = summary.get("segment_effects")
+        # Convert avg-based effects stored in checkpoints to sum-based format expected by optimizer
+        if isinstance(seg_eff, dict):
+            converted: dict[str, dict[str, float]] = {}
+            for key, rec in seg_eff.items():
+                if not isinstance(rec, dict):
+                    continue
+                try:
+                    count = float(rec.get("count", 0.0) or 0.0)
+                except Exception:
+                    count = 0.0
+                # Prefer existing sums if already present; else derive from averages
+                eff_r = rec.get("effect_on_refusal_sum")
+                eff_c = rec.get("effect_on_completion_sum")
+                if eff_r is None:
+                    avg_r = rec.get("avg_effect_on_refusal")
+                    try:
+                        eff_r = float(avg_r) * count if avg_r is not None else 0.0
+                    except Exception:
+                        eff_r = 0.0
+                if eff_c is None:
+                    avg_c = rec.get("avg_effect_on_completion")
+                    try:
+                        eff_c = float(avg_c) * count if avg_c is not None else 0.0
+                    except Exception:
+                        eff_c = 0.0
+                try:
+                    eff_r = float(eff_r or 0.0)
+                except Exception:
+                    eff_r = 0.0
+                try:
+                    eff_c = float(eff_c or 0.0)
+                except Exception:
+                    eff_c = 0.0
+                converted[key] = {
+                    "count": count,
+                    "effect_on_refusal_sum": eff_r,
+                    "effect_on_completion_sum": eff_c,
+                }
+            segment_effects = converted
+        else:
+            segment_effects = None
+            raise ValueError("segment_effects in summary.json is not a dict; cannot resume.")
+    logger.info(
+        "[CAUSAL] Resuming effect: total refusal (%.5f), total completion (%.5f)",
+        float(segment_effects["system_role"]["effect_on_refusal_sum"]),
+        float(segment_effects["system_role"]["effect_on_completion_sum"])
+    )
     
     return population, frontier, gen_num, segment_effects
 

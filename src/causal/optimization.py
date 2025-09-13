@@ -289,10 +289,13 @@ def optimize_instructions(
     seen_cache: dict[str, Candidate] = {}
 
     def _update_effects(intervention_key: str, parent: Candidate, child: Candidate):
-        rec = segment_effect_sums.setdefault(intervention_key, {"count": 0.0, "effect_on_refusal_sum": 0.0, "effect_on_completion_sum": 0.0})
-        rec["count"] += 1.0
-        rec["effect_on_refusal_sum"] += child.refusal - parent.refusal
-        rec["effect_on_completion_sum"] += child.completion - parent.completion
+        rec = segment_effect_sums.setdefault(
+            intervention_key,
+            {"count": 0.0, "effect_on_refusal_sum": 0.0, "effect_on_completion_sum": 0.0},
+        )
+        rec["count"] = float(rec.get("count", 0.0) or 0.0) + 1.0
+        rec["effect_on_refusal_sum"] = float(rec.get("effect_on_refusal_sum", 0.0) or 0.0) + (child.refusal - parent.refusal)
+        rec["effect_on_completion_sum"] = float(rec.get("effect_on_completion_sum", 0.0) or 0.0) + (child.completion - parent.completion)
 
     def score_and_register_candidate(t: str, reason: str, mutation_meta: Optional[Dict[str, Any]] = None):
         k = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
@@ -319,6 +322,7 @@ def optimize_instructions(
         for cand in population:
             seen_cache[cand.hash()] = cand
         if initial_segment_effects:
+            # Assume effects were converted by the resume loader to sum-based format
             segment_effect_sums = initial_segment_effects
         n_seeds = 0  # Since we're resuming, seeds are already in population
         num_evaluations = len(population)
@@ -346,7 +350,9 @@ def optimize_instructions(
     # Lazy import to avoid cycles
     from .io_utils import write_optimization_outputs  # type: ignore
 
+    last_generation = start_generation
     for gen in tqdm(range(start_generation + 1, cfg.max_generations + 1), desc="Generations", unit="gen"):
+        last_generation = gen
         # If train_eval_fn supports per-generation resampling (minibatch stochastic fitness) invoke it now.
         try:
             if hasattr(train_eval_fn, "resample") and callable(getattr(train_eval_fn, "resample")):
@@ -529,7 +535,7 @@ def optimize_instructions(
     return OptimizationResult(
         frontier=frontier,
         population=population,
-        generations=gen,
+        generations=last_generation,
         num_evaluations=num_evaluations,
         segment_effects=segment_effects or None,
         per_generation_full_eval=per_generation_full_eval,
