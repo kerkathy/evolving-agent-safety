@@ -466,7 +466,6 @@ def optimize_instructions(
                 frontier=frontier,
                 population=population,
                 summary=ckpt_summary,
-                per_generation_full_eval=None,  # Don't save full eval yet
             )
             logger.info("[OPT][CKPT] Wrote generation %d checkpoint (pre-full-eval) to %s", gen, base_dir)
         except Exception as e:
@@ -538,7 +537,6 @@ def optimize_instructions(
         generations=last_generation,
         num_evaluations=num_evaluations,
         segment_effects=segment_effects or None,
-        per_generation_full_eval=per_generation_full_eval,
     )
 
 

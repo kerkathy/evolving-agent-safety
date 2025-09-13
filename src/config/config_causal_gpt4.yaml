@@ -21,7 +21,7 @@ models:
   max_tokens: 4096
   refusal_judge_model: openai/gpt-4o
   semantic_judge_model: openai/gpt-4o
-  api_base: https://api.shubiaobiao.cn/v1/
+  api_base: https://api.openai.com/v1/
 
 # (Unrelated original optimization block retained; not used by causal optimization loop but need to be kept for config parsing)
 optimization:
@@ -49,7 +49,7 @@ causal:
   max_collected_prompts: 3
   seed: 42
   output_dir: "results/causal_optimization"
-  resume_folder: "results/causal_optimization_20250912_203514"  # Resume from this folder
+  resume_folder:  # Resume from this folder
   # --- Optimization mode switches ---
   optimization:
     frontier_size: 10
@@ -61,4 +61,4 @@ causal:
     max_data_size:       # Dataset size (for debugging)
     minibatch_size: 4
     segment_lm_name: openai/gpt-4o-mini # model to use for segmentation
-    segment_model_api_base: https://api.shubiaobiao.cn/v1/
+    segment_model_api_base: https://api.openai.com/v1

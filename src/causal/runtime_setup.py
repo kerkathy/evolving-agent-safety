@@ -10,7 +10,6 @@ import dspy
 
 from src.utils.enhanced_dspy import create_enhanced_dspy_lm
 from src.adapter import FunctionCallAdapter
-from src.agent import WebReActAgent
 from src.metrics import AgentHarmMetricFactory
 
 logger = logging.getLogger(__name__)
@@ -38,21 +37,4 @@ def build_agent_and_metric(config) -> tuple[WebReActAgent, AgentHarmMetricFactor
     logger.info("[SETUP] Created agent and metric factory (task=%s, refusal_model=%s, semantic_model=%s)", config.data.task_name, config.models.refusal_judge_model, config.models.semantic_judge_model)
     return agent, metric_factory
 
-
-def build_agent_and_dual_metric(config) -> tuple[WebReActAgent, AgentHarmMetricFactory, AgentHarmMetricFactory]:
-    agent = WebReActAgent()
-    benign_metric_factory = AgentHarmMetricFactory(
-        task_name="benign",
-        refusal_judge_model=config.models.refusal_judge_model,
-        semantic_judge_model=config.models.semantic_judge_model,
-    )
-    harmful_metric_factory = AgentHarmMetricFactory(
-        task_name="harmful",
-        refusal_judge_model=config.models.refusal_judge_model,
-        semantic_judge_model=config.models.semantic_judge_model,
-    )
-    logger.info("[SETUP] Created agent and dual metric factories (benign_model=%s, harmful_model=%s)", config.models.refusal_judge_model, config.models.semantic_judge_model)
-    return agent, benign_metric_factory, harmful_metric_factory
-
-
-__all__ = ["configure_dspy", "build_agent_and_metric", "build_agent_and_dual_metric"]
+__all__ = ["configure_dspy", "build_agent_and_metric"]

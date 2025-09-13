@@ -27,7 +27,7 @@ def optimize_agent(agent, trainset, config, api_key):
         if algo == "gepa":
             metric_fn = metric_factory.metric_with_feedback
         elif algo in ["mipro", "copro"]:
-            metric_fn = metric_factory.metric
+            metric_fn = metric_factory.task_score_metric
         else:
             raise ValueError(f"Unknown optimization algorithm: {algo}")
         logger.info("Optimization target: TASK SCORE")

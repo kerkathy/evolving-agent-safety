@@ -20,6 +20,9 @@ from external.inspect_evals.src.inspect_evals.agentharm.scorer import RefusalJud
 from src.utils.logging_setup import mlflow_log_metrics
 from src.utils.sync_wrappers import asyncio_run_wrapper, get_sync_grading_function
 
+# Hard timeout for async grading/refusal checks (in seconds)
+TIMEOUT_SEC: float = 120.0
+
 
 def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage]:
     """Convert DSPy trajectory entries into inspect_ai ChatMessages.
@@ -59,7 +62,13 @@ def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage
                 tool_calls=[tool_call]
             )
             messages.append(assistant_msg)
-            logger.debug(f"Added assistant message: role={assistant_msg.role}, tool_calls={[tc.function for tc in assistant_msg.tool_calls]}")
+            try:
+                tc_list = getattr(assistant_msg, 'tool_calls', None) or []
+                logger.debug(
+                    f"Added assistant message: role={assistant_msg.role}, tool_calls={[getattr(tc, 'function', '?') for tc in tc_list]}"
+                )
+            except Exception:
+                logger.debug("Added assistant message with tool call (logging of tool_calls failed)")
             
             # Create tool result message if there's a return value
             if "return_value" in step and step["return_value"] is not None:
@@ -95,12 +104,18 @@ def trajectory_to_messages(trajectory: List[Dict[str, Any]]) -> List[ChatMessage
     
     logger.debug(f"Final messages: {len(messages)} total")
     for j, msg in enumerate(messages):
-        if hasattr(msg, 'tool_calls') and msg.tool_calls:
-            logger.debug(f"Message {j}: role={msg.role}, tool_calls={[tc.function for tc in msg.tool_calls]}")
-        elif hasattr(msg, 'function'):
-            logger.debug(f"Message {j}: role={msg.role}, function={msg.function}")
-        else:
-            logger.debug(f"Message {j}: role={msg.role}, content_length={len(str(msg.content))}")
+        try:
+            tc_list = getattr(msg, 'tool_calls', None)
+            if tc_list:
+                logger.debug(
+                    f"Message {j}: role={getattr(msg, 'role', '?')}, tool_calls={[getattr(tc, 'function', '?') for tc in tc_list]}"
+                )
+            else:
+                logger.debug(
+                    f"Message {j}: role={getattr(msg, 'role', '?')}, content_length={len(str(getattr(msg, 'content', '')))}"
+                )
+        except Exception:
+            logger.debug(f"Message {j}: (logging failed)")
     
     return messages
 
@@ -121,7 +136,7 @@ class AgentHarmMetricFactory:
         self._current_run_id: str | None = None  # Track MLflow run ID for logging
         
         # Create synchronous wrappers for async operations
-        self._sync_refusal_check = asyncio_run_wrapper(self.refusal_judge_model.check_refusal)
+        self._sync_refusal_check = asyncio_run_wrapper(self.refusal_judge_model.check_refusal, timeout=TIMEOUT_SEC)
 
     def _score_sync(self, example, pred, trace=None) -> dict:
         """Synchronous scoring function for DSPy compatibility.
@@ -142,34 +157,58 @@ class AgentHarmMetricFactory:
         self.logger.debug("Converted to %d messages", len(messages))
 
         for i, msg in enumerate(messages):
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                tool_calls_info = [{"function": tc.function, "args": tc.arguments} for tc in msg.tool_calls]
-                self.logger.debug(f"Message {i}: role={msg.role}, tool_calls={tool_calls_info}")
-            elif hasattr(msg, 'function'):
-                self.logger.debug(f"Message {i}: role={msg.role}, function={msg.function}, content_preview={str(msg.content)[:100]}...")
-            else:
-                self.logger.debug(f"Message {i}: role={msg.role}, content_preview={str(msg.content)[:100]}...")
+            try:
+                tc_list = getattr(msg, 'tool_calls', None)
+                if tc_list:
+                    tool_calls_info = [{"function": getattr(tc, 'function', '?'), "args": getattr(tc, 'arguments', {})} for tc in tc_list]
+                    self.logger.debug(f"Message {i}: role={getattr(msg, 'role', '?')}, tool_calls={tool_calls_info}")
+                else:
+                    self.logger.debug(
+                        f"Message {i}: role={getattr(msg, 'role', '?')}, content_preview={str(getattr(msg, 'content', ''))[:100]}..."
+                    )
+            except Exception:
+                self.logger.debug(f"Message {i}: (logging failed)")
         
         metadata = dict(getattr(example, "metadata", {}) or {})
         metadata["semantic_judge"] = self.semantic_judge_model
 
-        if self._current_run_id is None and mlflow.active_run():
-            self._current_run_id = mlflow.active_run().info.run_id
+        if self._current_run_id is None:
+            current_run = mlflow.active_run()
+            if current_run:
+                self._current_run_id = current_run.info.run_id
 
         # Grading function for task score
+        # Grading with minimal retry on transient errors
+        score_dict = {}
+        task_score = 0.0
         try:
-            sync_grading_func = get_sync_grading_function(self.task_name, grading_function_name)
-            self.logger.debug(f"Calling grading function: {grading_function_name}")
-
-            score_dict = sync_grading_func(metadata, messages)
-            self.logger.debug(f"Grading result: {score_dict}")
-            task_score = float(np.mean(list(score_dict.values()))) if score_dict else 0.0
-            self.logger.debug(f"Task score (mean): {task_score}")
-
-        except (AttributeError, Exception) as e:
+            sync_grading_func = get_sync_grading_function(self.task_name, grading_function_name, timeout=TIMEOUT_SEC)
+        except Exception as e:
             self.logger.warning("Failed to get grading function %s: %s", grading_function_name, e, exc_info=True)
-            score_dict = {}
-            task_score = 0.0
+            sync_grading_func = None
+
+        if sync_grading_func is not None:
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    self.logger.debug(f"Calling grading function (attempt {attempt+1}): {grading_function_name}")
+                    score_dict = sync_grading_func(metadata, messages)
+                    task_score = float(np.mean(list(score_dict.values()))) if score_dict else 0.0
+                    self.logger.debug(f"Grading result: {score_dict}; task_score={task_score}")
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    self.logger.warning(
+                        "Grading function error on %s (attempt %d): %s",
+                        grading_function_name,
+                        attempt + 1,
+                        e,
+                        exc_info=True,
+                    )
+            if last_error is not None:
+                # leave score_dict empty and task_score=0.0; record will note failure via logs
+                pass
 
         # Refusal detection (binary)
         refusal_score = 0.0
@@ -185,11 +224,20 @@ class AgentHarmMetricFactory:
                 assistant_text = message.content
             if not assistant_text:
                 continue
-            try:
-                refusal, explanation = self._sync_refusal_check(assistant_text)
-            except Exception as e:
-                self.logger.warning("Refusal judge error on message %d: %s", i, e, exc_info=True)
-                refusal, explanation = False, f"Error: {e}"
+            # Minimal retry for refusal check
+            refusal = False
+            explanation = ""
+            last_err: Exception | None = None
+            for attempt in range(2):
+                try:
+                    refusal, explanation = self._sync_refusal_check(assistant_text)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    self.logger.warning("Refusal judge error on message %d (attempt %d): %s", i, attempt + 1, e, exc_info=True)
+            if last_err is not None:
+                refusal, explanation = False, f"Error: {last_err}"
             refusal_messages.append(
                 {
                     "message_idx": i,
@@ -220,7 +268,7 @@ class AgentHarmMetricFactory:
         )
         return {"task_score": task_score, "score_dict": score_dict, "refusal": refusal_score}
 
-    def metric(self, example, pred, trace=None) -> float:
+    def task_score_metric(self, example, pred, trace=None) -> float:
         """Synchronous metric for use with DSPy."""
         return float(self._score_sync(example, pred, trace).get("task_score", 0))
 

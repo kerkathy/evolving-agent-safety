@@ -54,7 +54,6 @@ def write_optimization_outputs(
     frontier: Iterable[Any],
     population: Iterable[Any],
     summary: dict,
-    per_generation_full_eval: list[dict] | None = None,
 ) -> None:
     """Write standard optimization artifacts to ``out_dir``.
 
@@ -76,7 +75,3 @@ def write_optimization_outputs(
         json.dump(population_json, f, indent=2)
     with open(out_path / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
-
-    if per_generation_full_eval:
-        with open(out_path / "frontier_full_eval_per_generation.json", "w") as f:
-            json.dump(per_generation_full_eval, f, indent=2)

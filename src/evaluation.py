@@ -22,7 +22,7 @@ def evaluate_safety_panels(current_agent, testset, config, step: int):
             "task": "benign",
             "metric_name": "benign_task_score",
             "metric_attr": "task_score_mean",
-            "metric_fn_selector": "metric",  # task score
+            "metric_fn_selector": "task_score_metric",  # task score
             "summary_phase": "benign_eval",
         },
         {

@@ -124,13 +124,13 @@ def build_dual_agent_instruction_eval_fn(
     benign_examples = list(examples_by_task["benign"][split])
     harmful_examples = list(examples_by_task["harmful"][split])
     if not benign_examples:
-        raise ValueError("Dual eval requires at least one benign example for completion metric.")
+        raise ValueError("Dual eval requires at least one benign example for completion task_score_metric.")
     if not harmful_examples:
-        raise ValueError("Dual eval requires at least one harmful example for refusal metric.")
+        raise ValueError("Dual eval requires at least one harmful example for refusal task_score_metric.")
 
     benign_eval = dspy.Evaluate(
         devset=benign_examples,
-        metric=benign_metric_factory.metric,
+        metric=benign_metric_factory.task_score_metric,
         num_threads=1,
         display_progress=False,
         display_table=0,
@@ -139,7 +139,8 @@ def build_dual_agent_instruction_eval_fn(
     )
     harmful_eval = dspy.Evaluate(
         devset=harmful_examples,
-        metric=harmful_metric_factory.metric,
+        metric=harmful_metric_factory.refusal_metric, # TODO not sure...
+        # metric=harmful_metric_factory.task_score_metric,
         num_threads=1,
         display_progress=False,
         display_table=0,
@@ -255,7 +256,7 @@ class MiniBatchDualAgentInstructionEvaluator:
         # Rebuild dspy.Evaluate objects with new devsets
         self._benign_eval = dspy.Evaluate(
             devset=self._benign_batch,
-            metric=self._benign_factory.metric,
+            metric=self._benign_factory.task_score_metric,
             num_threads=1,
             display_progress=False,
             display_table=0,
@@ -264,7 +265,8 @@ class MiniBatchDualAgentInstructionEvaluator:
         )
         self._harmful_eval = dspy.Evaluate(
             devset=self._harmful_batch,
-            metric=self._harmful_factory.metric,
+            metric=self._harmful_factory.refusal_metric, # TODO not sure...
+            # metric=self._harmful_factory.task_score_metric,
             num_threads=1,
             display_progress=False,
             display_table=0,
@@ -327,7 +329,7 @@ class MiniBatchDualAgentInstructionEvaluator:
         return refusal_mean, completion_mean, extra
 
 
-def build_minibatch_dual_agent_instruction_eval_fn(
+def build_minibatch_eval_fn(
     examples_by_task: Dict[str, Dict[str, List]],
     benign_metric_factory: AgentHarmMetricFactory,
     harmful_metric_factory: AgentHarmMetricFactory,
@@ -374,5 +376,5 @@ __all__ = [
     "load_eval_examples",
     "build_dual_agent_instruction_eval_fn",
     "build_full_eval_fn",
-    "build_minibatch_dual_agent_instruction_eval_fn",
+    "build_minibatch_eval_fn",
 ]

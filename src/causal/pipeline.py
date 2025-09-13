@@ -21,6 +21,7 @@ import os
 import json
 import logging
 from datetime import datetime
+import random
 
 import mlflow
 
@@ -30,10 +31,11 @@ from .io_utils import write_optimization_outputs
 from .eval_utils import (
     load_eval_examples,
     build_full_eval_fn,
-    build_minibatch_dual_agent_instruction_eval_fn,
+    build_minibatch_eval_fn,
 )
 from src.metrics import AgentHarmMetricFactory
-from .runtime_setup import configure_dspy, build_agent_and_dual_metric
+from .runtime_setup import configure_dspy
+from src.agent import WebReActAgent
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +216,31 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     # Configure runtime (DSPy + agent + metric)
     api_key = os.getenv("OPENAI_API_KEY") or ""
     main_lm = configure_dspy(config.models, api_key)
-    agent, benign_metric_factory, harmful_metric_factory = build_agent_and_dual_metric(config)
+    # agent, benign_metric_factory, harmful_metric_factory = build_agent_and_dual_metric(config)
+    
+    agent = WebReActAgent()
+    benign_metric_factory = AgentHarmMetricFactory(
+        task_name="benign",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    harmful_metric_factory = AgentHarmMetricFactory(
+        task_name="harmful",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    # Recreate fresh metric factories for full evaluation to avoid mixing records with train-slice eval.
+    benign_full_metric_factory = AgentHarmMetricFactory(
+        task_name="benign",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    harmful_full_metric_factory = AgentHarmMetricFactory(
+        task_name="harmful",
+        refusal_judge_model=config.models.refusal_judge_model,
+        semantic_judge_model=config.models.semantic_judge_model,
+    )
+    logger.info("[SETUP] Created agent and dual metric factories (benign_model=%s, harmful_model=%s)", config.models.refusal_judge_model, config.models.semantic_judge_model)
 
     # Load examples (separate benign/harmful)
     # We now load the FULL pool and rely on a per-generation minibatch sampler
@@ -222,39 +248,26 @@ def run_causal_analysis(config, experiment_name: str) -> None:
     examples_by_task = load_eval_examples(config, full=True)
     if not examples_by_task.get("benign") or not examples_by_task.get("harmful"):
         raise ValueError("[CAUSAL][OPT] Missing benign or harmful examples; cannot proceed with dual-metric optimization.")
-    train_eval_fn = build_minibatch_dual_agent_instruction_eval_fn(
+    train_eval_fn = build_minibatch_eval_fn(
         examples_by_task,
         benign_metric_factory=benign_metric_factory,
         harmful_metric_factory=harmful_metric_factory,
         agent=agent,
         minibatch_size=cconf.optimization.minibatch_size,
-        rng=None,
+        rng=random.Random(cconf.optimization.random_seed),
         split='train',
-    )
-    # Full eval slice for post-generation frontier assessment
-    # Recreate fresh metric factories for full evaluation to avoid mixing records with train-slice eval.
-    benign_full_factory = AgentHarmMetricFactory(
-        task_name=benign_metric_factory.task_name,
-        refusal_judge_model=config.models.refusal_judge_model,
-        semantic_judge_model=config.models.semantic_judge_model,
-    )
-    harmful_full_factory = AgentHarmMetricFactory(
-        task_name=harmful_metric_factory.task_name,
-        refusal_judge_model=config.models.refusal_judge_model,
-        semantic_judge_model=config.models.semantic_judge_model,
     )
     dev_eval_fn = build_full_eval_fn(
         examples_by_task,
-        benign_metric_factory=benign_full_factory,
-        harmful_metric_factory=harmful_full_factory,
+        benign_metric_factory=benign_full_metric_factory,
+        harmful_metric_factory=harmful_full_metric_factory,
         agent=agent,
         split='eval',
     )
-
     test_eval_fn = build_full_eval_fn(
         examples_by_task,
-        benign_metric_factory=benign_full_factory,
-        harmful_metric_factory=harmful_full_factory,
+        benign_metric_factory=benign_full_metric_factory,
+        harmful_metric_factory=harmful_full_metric_factory,
         agent=agent,
         split='test',
     )
@@ -341,10 +354,10 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         "segment_effects": opt_result.segment_effects,  # Added segment effects
         "test_results": test_results,
         "test_summary": {
-            "best_refusal_test": max((r["refusal_test"] for r in test_results), default=0.0),
-            "best_completion_test": max((r["completion_test"] for r in test_results), default=0.0),
             "avg_refusal_test": sum((r["refusal_test"] for r in test_results)) / (len(test_results) or 1),
             "avg_completion_test": sum((r["completion_test"] for r in test_results)) / (len(test_results) or 1),
+            "best_refusal_test": max((r["refusal_test"] for r in test_results), default=0.0),
+            "best_completion_test": max((r["completion_test"] for r in test_results), default=0.0),
         },
     }
 
@@ -353,7 +366,6 @@ def run_causal_analysis(config, experiment_name: str) -> None:
         frontier=opt_result.frontier,
         population=opt_result.population,
         summary=summary,
-        per_generation_full_eval=opt_result.per_generation_full_eval,
     )
     logger.info("[CAUSAL][OPT] Summary: %s", summary)
     logger.info("[CAUSAL][OPT] Results written to %s", run_out_dir.resolve())

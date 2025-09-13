@@ -29,7 +29,11 @@ from src.optimization import optimize_agent
 # %%
 # Logging setup
 logging_level = logging.INFO
-logging.basicConfig(level=logging_level)
+logging.basicConfig(
+    level=logging_level,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y/%m/%d %H:%M:%S",
+)
 setup_logging()
 logger = logging.getLogger("main")
 
@@ -39,6 +43,7 @@ logging.getLogger("grading_utils").setLevel(logging_level)
 logging.getLogger("combined_scorer").setLevel(logging_level)
 logging.getLogger("trajectory_to_messages").setLevel(logging_level)
 
+logger.info("Test logging setup complete.")
 
 def prepare_data(config):
     cfg = config.data
