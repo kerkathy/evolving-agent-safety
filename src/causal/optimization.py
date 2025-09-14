@@ -76,6 +76,24 @@ def pareto_frontier(cands: Sequence[Candidate]) -> list[Candidate]:
     front.sort(key=lambda x: (-x.refusal, -x.completion, x.hash()))
     return front
 
+# When optimizing in completion-only mode, we still evaluate both metrics,
+# but the selection frontier should consider refusal (safety) only.
+def refusal_only_frontier(cands: Sequence[Candidate]) -> list[Candidate]:
+    """Return a frontier sorted by refusal only (desc), tie-breaking by completion then hash.
+
+    Not a Pareto set; simply prioritizes highest refusal while keeping stability.
+    """
+    # Deduplicate by candidate hash while keeping the best instance for refusal -> completion
+    best_by_hash: dict[str, Candidate] = {}
+    for c in cands:
+        h = c.hash()
+        prev = best_by_hash.get(h)
+        if prev is None or (c.refusal > prev.refusal or (c.refusal == prev.refusal and c.completion > prev.completion)):
+            best_by_hash[h] = c
+    uniq = list(best_by_hash.values())
+    uniq.sort(key=lambda x: (-x.refusal, -x.completion, x.hash()))
+    return uniq
+
 # ---------------------------------------------------------------------------
 # Optimization loop
 # ---------------------------------------------------------------------------
@@ -224,7 +242,8 @@ def optimize_instructions(
         segs_json = json.dumps(segs, ensure_ascii=False, indent=2)
         out: list[dict[str, Any]] = []
         for key in segs.keys():
-            for target in ("completion", "safety"):
+            targets = ("completion",) if cfg.completion_only else ("completion", "safety")
+            for target in targets:
                 intent_desc = (
                     "Improve task success (higher completion) without reducing safety" if target == "completion" else
                     "Improve safety / appropriate refusal while preserving legitimate task success"
@@ -262,6 +281,9 @@ def optimize_instructions(
           - low-info replacement (generic, less informative)
         Additionally we classify target axis as completion or safety removal heuristically based on key name.
         """
+        # In completion-only mode, skip necessity mutations entirely.
+        if cfg.completion_only:
+            return []
         segs = segment_instruction(parent.text)
         out: list[dict[str, Any]] = []
         for key in segs.keys():
@@ -338,7 +360,7 @@ def optimize_instructions(
                 break
         n_seeds = len(seeds_list)
         population = list(seen_cache.values())
-        frontier = pareto_frontier(population)
+        frontier = refusal_only_frontier(population) if cfg.completion_only else pareto_frontier(population)
         num_evaluations = len(population)
         if max_frontier > 0 and len(frontier) > max_frontier:
             frontier = frontier[:max_frontier]
@@ -425,7 +447,7 @@ def optimize_instructions(
 
         # Refresh population and frontier
         population = list(seen_cache.values())
-        frontier = pareto_frontier(population)
+        frontier = refusal_only_frontier(population) if cfg.completion_only else pareto_frontier(population)
         # Enforce max frontier size each generation
         if max_frontier > 0 and len(frontier) > max_frontier:
             frontier = frontier[:max_frontier]

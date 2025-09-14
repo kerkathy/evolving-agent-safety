@@ -39,7 +39,7 @@ experiment:
 causal:
   enabled: true
   # Option 1: Directly provide initial prompts here
-  collect_from: mlflow-artifacts:/13/e271ee3845fc4152af7992d6e85a55cd/artifacts/best_model.json # Optional: path to JSON file with ["react"]["predict"]["signature"]["instructions"] list
+  collect_from: scratch_prompt.json # mlflow-artifacts:/13/e271ee3845fc4152af7992d6e85a55cd/artifacts/best_model.json
   # Option 2: Either set run_name OR model_lm_name to search from previous runs (kept from minimal config)
   run_name: 
   param_key: "WebReActAgent.react.predict.signature.instructions"
@@ -48,7 +48,7 @@ causal:
   # Increase prompt budget for broader seed set for optimization
   max_collected_prompts: 3
   seed: 42
-  output_dir: "results/causal_optimization"
+  output_dir: "results/causal_optimization_completion_only_fromscratch"
   resume_folder:  # Resume from this folder
   # --- Optimization mode switches ---
   optimization:
@@ -58,7 +58,7 @@ causal:
     target_completion: 1.0
     target_refusal: 1.0
     # If true: generate completion-only mutations and select frontier by refusal only
-    completion_only: false
+    completion_only: true
     max_candidates_evaluated:  # Cap total evaluations (frontier + mutations)
     max_data_size:       # Dataset size (for debugging)
     minibatch_size: 4

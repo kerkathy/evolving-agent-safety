@@ -22,7 +22,7 @@ models:
 
 optimization:
   optim_seed: 6793115
-  auto_mode: light # light, medium, heavy
+  auto_mode: medium # light, medium, heavy
   num_threads: 4
   algorithm: gepa # one of: mipro, copro, gepa
   run_optimization: true

@@ -97,6 +97,8 @@ class CausalOptimizationConfig:
     segment_model_api_base: str = "https://api.openai.com/v1"
     # If False, omit necessity mutations (removals/low-info replacements) during optimization
     include_necessity_mutations: bool = True
+    # If True, generate only completion-oriented mutations and select frontier by refusal only
+    completion_only: bool = False
 
     def clamp(self) -> None:
         if self.frontier_size <= 0:
