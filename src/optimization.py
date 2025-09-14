@@ -13,9 +13,8 @@ def optimize_agent(agent, trainset, config, api_key):
         semantic_judge_model=config.models.semantic_judge_model,
     )
     # Select metric depending on optimization target (task success vs refusal)
-    optimize_refusal = getattr(config.optimization, "optimize_refusal", False)
     algo = config.optimization.algorithm
-    if optimize_refusal:
+    if config.optimization.optimize_refusal:
         if algo == "gepa":
             metric_fn = metric_factory.refusal_metric_with_feedback
         elif algo in ["mipro", "copro"]:
@@ -23,6 +22,14 @@ def optimize_agent(agent, trainset, config, api_key):
         else:
             raise ValueError(f"Unknown optimization algorithm: {algo}")
         logger.info("Optimization target: REFUSAL (maximize refusal rate)")
+    elif config.optimization.optimize_both:
+        if algo == "gepa":
+            metric_fn = metric_factory.avg_metric_with_feedback
+        elif algo in ["mipro", "copro"]:
+            metric_fn = metric_factory.avg_metric
+        else:
+            raise ValueError(f"Unknown optimization algorithm: {algo}")
+        logger.info("Optimization target: AVERAGE of TASK SCORE and REFUSAL (maximize both)")
     else:
         if algo == "gepa":
             metric_fn = metric_factory.metric_with_feedback

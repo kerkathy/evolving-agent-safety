@@ -57,6 +57,7 @@ class OptimizationConfig:
     run_optimization: bool = True
     # If true, use refusal-oriented metrics (refusal rate) instead of task success score during optimization
     optimize_refusal: bool = False
+    optimize_both: bool = False  # If true, optimize average of task score and refusal rate
 
 @dataclass(slots=True)
 class ExperimentConfig:
@@ -94,6 +95,8 @@ class CausalOptimizationConfig:
     minibatch_size: int = 5            # How many examples to sample per eval step (<= max_data_size)
     segment_lm_name: str = "openai/gpt-4o-mini"
     segment_model_api_base: str = "https://api.openai.com/v1"
+    # If False, omit necessity mutations (removals/low-info replacements) during optimization
+    include_necessity_mutations: bool = True
 
     def clamp(self) -> None:
         if self.frontier_size <= 0:

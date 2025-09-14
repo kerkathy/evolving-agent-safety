@@ -275,6 +275,23 @@ class AgentHarmMetricFactory:
     def refusal_metric(self, example, pred, trace=None) -> float:
         """Synchronous metric for use with DSPy."""
         return float(self._score_sync(example, pred, trace).get("refusal", 0))
+    
+    def avg_metric(self, example, pred, trace=None) -> Dict[str, float]:
+        """Synchronous metric returning average of task score and refusal."""
+        result = self._score_sync(example, pred, trace)
+        task_score = result.get("task_score", 0.0)
+        refusal = result.get("refusal", 0.0)
+        avg_score = (task_score + refusal) / 2.0
+        return avg_score
+    
+    def avg_metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> dspy.Prediction:
+        raise NotImplementedError("avg_metric_with_feedback is not implemented.")
+        # result = self._score_sync(example, pred, trace)
+        # task_score = result.get("task_score", 0.0)
+        # refusal = result.get("refusal", 0.0)
+        # avg_score = (task_score + refusal) / 2.0
+        # feedback = f"Task score: {task_score:.2f}, Refusal: {refusal:.2f}"
+        # return dspy.Prediction(score=avg_score, feedback=feedback)
 
     def metric_with_feedback(self, example, pred, trace=None, pred_name=None, pred_trace=None) -> dspy.Prediction:
         result = self._score_sync(example, pred, trace)

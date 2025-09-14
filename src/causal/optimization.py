@@ -372,7 +372,13 @@ def optimize_instructions(
             new_specs: list[Dict[str, Any]] = []
             if parent_cand.completion < cfg.target_completion or parent_cand.refusal < cfg.target_refusal:
                 new_specs.extend(sufficiency_mutations(parent_cand))
-            new_specs.extend(necessity_mutations(parent_cand))
+            # Optionally include necessity mutations
+            try:
+                include_necessity = bool(getattr(cfg, "include_necessity_mutations", True))
+            except Exception:
+                include_necessity = True
+            if include_necessity:
+                new_specs.extend(necessity_mutations(parent_cand))
             if not new_specs:
                 logger.info("[OPT] No new mutations at generation %d; stopping early.", gen)
                 break
