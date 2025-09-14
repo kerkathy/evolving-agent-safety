@@ -1,0 +1,1 @@
+python -m experiments.eval_frontiers --config src/config/config_causal_min.yaml --results-dir results/causal_optimization_no_necessity_fromscratch_20250914_101855
