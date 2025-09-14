@@ -1,0 +1,67 @@
+# Derived from config_min.yaml, augmented for causal instruction optimization.
+# Keeps original values unless changed for optimization mode.
+
+data:
+  task_name: harmful
+  split: test_public
+  train_fraction: 
+  shuffle_seed: 0
+  behavior_ids: []
+  sample_ids:
+  testset_ids: "63-3,50-3,62-1,26-4,22-3,64-2,43-1,33-3,10-4,46-1,37-1,7-1,25-1,17-2,54-3,29-3,2-1,35-2,61-4,49-4,40-1,44-4,28-2,42-4,22-2,29-1,49-1,24-1,19-1,28-4,39-2,64-1,13-3,43-4,20-3,40-2,50-2,53-3,58-4,27-3,19-3,9-2,64-4,26-2,42-1,20-1,66-2,7-4,24-2,27-2,52-3,54-4,49-3,14-3,14-1,62-2,43-2,22-1,10-1,30-4,25-3,33-2,45-3,1-1,38-3,11-4,1-4,9-4,66-1,49-2,42-2,63-4,52-2,23-1,30-1,40-4,35-3,58-1,52-4,44-1,33-1,10-3,13-2,29-4,19-2,58-3,50-1,26-1,61-3,13-1,62-3,28-1,17-4,46-2,23-4,54-2,35-4,44-3,29-2,38-4,45-1,46-3,26-3,7-3,39-4,37-3" # list of IDs for testset; others used for trainset
+  detailed_behaviors: 
+  hint_included: 
+  n_irrelevant_tools: 0
+
+# lm_name: Main model for generation and mutation
+models:
+  lm_name: openai/gpt-4o-mini
+  lm_temperature: 0
+  seed: 42
+  max_tokens: 4096
+  refusal_judge_model: openai/gpt-4o
+  semantic_judge_model: openai/gpt-4o
+  api_base: https://api.openai.com/v1/
+
+# (Unrelated original optimization block retained; not used by causal optimization loop but need to be kept for config parsing)
+optimization:
+  optim_seed: 6793115
+  auto_mode: light
+  num_threads: 4
+  algorithm: mipro
+  run_optimization: false
+  optimize_refusal: false
+
+experiment:
+  name: agentharm
+  uri: http://127.0.0.1:5000
+
+causal:
+  enabled: true
+  # Option 1: Directly provide initial prompts here
+  collect_from: mlflow-artifacts:/13/e271ee3845fc4152af7992d6e85a55cd/artifacts/best_model.json # Optional: path to JSON file with ["react"]["predict"]["signature"]["instructions"] list
+  # Option 2: Either set run_name OR model_lm_name to search from previous runs (kept from minimal config)
+  run_name: 
+  param_key: "WebReActAgent.react.predict.signature.instructions"
+  child_prefix: "eval_full_"
+
+  # Increase prompt budget for broader seed set for optimization
+  max_collected_prompts: 3
+  seed: 42
+  output_dir: "results/causal_optimization_completion_only"
+  resume_folder:  # Resume from this folder
+  # --- Optimization mode switches ---
+  optimization:
+    frontier_size: 10
+    max_generations: 5           # Slightly higher than default 10
+    random_seed: 42
+    target_completion: 1.0
+    target_refusal: 1.0
+    # If true: generate completion-only mutations and select frontier by refusal only
+    completion_only: true
+    max_candidates_evaluated:  # Cap total evaluations (frontier + mutations)
+    max_data_size:       # Dataset size (for debugging)
+    minibatch_size: 4
+    segment_lm_name: openai/gpt-4o-mini # model to use for segmentation
+    segment_model_api_base: https://api.openai.com/v1
+    include_necessity_mutations: false
