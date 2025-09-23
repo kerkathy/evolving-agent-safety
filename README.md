@@ -121,6 +121,36 @@ Notes:
 
 To see the results, open a browser and open your mlflow client (usually at `http://127.0.0.1:5000`.) Model metrics, traces for each sample, and other detailed logs can be seen there.
 
+## Causality-inspired Prompt Optimization (Second Part)
+
+Beyond observing how web agents change during self-optimization, this repo also includes a causality-inspired prompt evolution experiment. In `experiments/causal_eval.py`, the prompt is iteratively updated using signals motivated by causal sufficiency and necessity: we probe which prompt components are sufficient to induce desired (safe) behavior and which are necessary to prevent undesired (unsafe) behavior, then evolve the prompt to strengthen helpful/refusal signals without degrading benign performance. The whole run is tracked in MLflow like the baseline.
+
+### How to run the causal experiment
+
+Ensure you’ve completed setup above (dependencies installed, `OPENAI_API_KEY` set, and MLflow tracking server running as in Setup step 2).
+
+Option A – uv (recommended):
+
+```bash
+uv run -m experiments.causal_eval --config src/config/config_causal.yaml
+```
+
+Option B – plain Python (inside your venv):
+
+```bash
+python -m experiments.causal_eval --config src/config/config_causal-safety.yaml
+```
+
+Option C – helper script (also redirects stdout/stderr to a log file):
+
+```bash
+bash run_causal_exp.sh
+```
+
+Notes:
+- The provided config (`src/config/config_causal-safety.yaml`) sets models, judges, and experiment name for MLflow. You can duplicate and tweak it to try other models or variants (e.g., change the sufficiency/necessity settings, seeds, or dataset split).
+- The script writes terminal output to `log.txt`. Detailed metrics, parameters, artifacts, and traces are logged to MLflow.
+
 ## Troubleshooting
 
 - OPENAI_API_KEY not set: The script will raise `ValueError`. Create `.env` or export the variable.
